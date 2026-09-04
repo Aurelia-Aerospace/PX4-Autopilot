@@ -396,8 +396,9 @@ param_control_autosave(bool enable)
 	}
 }
 
+
 static int
-param_set_internal(param_t param, const void *val, bool mark_saved, bool notify_changes, bool update_remote = true)
+param_set_internal(param_t param, const void *val, bool mark_saved, bool notify_changes, bool from_flash, bool update_remote = true)
 {
 	if (!handle_in_range(param)) {
 		PX4_ERR("set invalid param %d", param);
@@ -408,6 +409,7 @@ param_set_internal(param_t param, const void *val, bool mark_saved, bool notify_
 		PX4_ERR("set invalid value");
 		return PX4_ERROR;
 	}
+
 
 	int result = -1;
 	bool param_changed = false;
@@ -432,6 +434,7 @@ param_set_internal(param_t param, const void *val, bool mark_saved, bool notify_
 			break;
 		}
 	}
+
 
 	if (user_config.store(param, new_value)) {
 		params_unsaved.set(param, !mark_saved);
@@ -480,7 +483,7 @@ param_set_internal(param_t param, const void *val, bool mark_saved, bool notify_
 #if defined(FLASH_BASED_PARAMS)
 int param_set_external(param_t param, const void *val, bool mark_saved, bool notify_changes)
 {
-	return param_set_internal(param, val, mark_saved, notify_changes);
+	return param_set_internal(param, val, mark_saved, notify_changes, false);
 }
 
 void param_get_external(param_t param, void *val)
@@ -491,17 +494,17 @@ void param_get_external(param_t param, void *val)
 
 int param_set(param_t param, const void *val)
 {
-	return param_set_internal(param, val, false, true);
+	return param_set_internal(param, val, false, true, false);
 }
 
 int param_set_no_notification(param_t param, const void *val)
 {
-	return param_set_internal(param, val, false, false);
+	return param_set_internal(param, val, false, false, false);
 }
 
 int param_set_no_remote_update(param_t param, const void *val, bool notify)
 {
-	return param_set_internal(param, val, false, notify, false);
+	return param_set_internal(param, val, false, notify, false, false);
 }
 
 bool param_used(param_t param)
@@ -1170,7 +1173,7 @@ param_import_callback(bson_decoder_t decoder, bson_node_t node)
 	case BSON_INT32: {
 			if (param_type(param) == PARAM_TYPE_INT32) {
 				int32_t i = node->i32;
-				param_set_internal(param, &i, true, true);
+				param_set_internal(param, &i, true, true, true);
 				PX4_DEBUG("Imported %s with value %" PRIi32, param_name(param), i);
 
 			} else {
@@ -1182,7 +1185,7 @@ param_import_callback(bson_decoder_t decoder, bson_node_t node)
 	case BSON_DOUBLE: {
 			if (param_type(param) == PARAM_TYPE_FLOAT) {
 				float f = node->d;
-				param_set_internal(param, &f, true, true);
+				param_set_internal(param, &f, true, true, true);
 				PX4_DEBUG("Imported %s with value %f", param_name(param), (double)f);
 
 			} else {
