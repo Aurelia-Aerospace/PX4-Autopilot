@@ -58,6 +58,26 @@ add_custom_command(
 add_custom_target(mavlink_c_generate_uavionix DEPENDS ${MAVLINK_LIBRARY_DIR}/${MAVLINK_DIALECT_UAVIONIX}/${MAVLINK_DIALECT_UAVIONIX}.h)
 set_source_files_properties(${MAVLINK_LIBRARY_DIR}/${MAVLINK_DIALECT_UAVIONIX}/${MAVLINK_DIALECT_UAVIONIX}.h PROPERTIES GENERATED true)
 
+set(MAVLINK_DIALECT_AURELIA "aurelia")
+add_custom_command(
+	OUTPUT ${MAVLINK_LIBRARY_DIR}/${MAVLINK_DIALECT_AURELIA}/${MAVLINK_DIALECT_AURELIA}.h
+	COMMAND
+		${PYTHON_EXECUTABLE} ${MAVLINK_GIT_DIR}/pymavlink/tools/mavgen.py
+			--lang C --wire-protocol 2.0
+			#--no-validate
+			#--strict-units
+			--output ${MAVLINK_LIBRARY_DIR}
+			${MAVLINK_GIT_DIR}/message_definitions/v1.0/${MAVLINK_DIALECT_AURELIA}.xml > ${CMAKE_CURRENT_BINARY_DIR}/mavgen_${MAVLINK_DIALECT_AURELIA}.log
+	DEPENDS
+		git_mavlink_v2
+		${MAVLINK_GIT_DIR}/pymavlink/tools/mavgen.py
+		${MAVLINK_GIT_DIR}/message_definitions/v1.0/${MAVLINK_DIALECT_AURELIA}.xml
+
+	COMMENT "Generating Mavlink ${MAVLINK_DIALECT_AURELIA}: ${MAVLINK_GIT_DIR_RELATIVE}/message_definitions/v1.0/${MAVLINK_DIALECT_AURELIA}.xml"
+)
+add_custom_target(mavlink_c_generate_aurelia DEPENDS ${MAVLINK_LIBRARY_DIR}/${MAVLINK_DIALECT_AURELIA}/${MAVLINK_DIALECT_AURELIA}.h)
+set_source_files_properties(${MAVLINK_LIBRARY_DIR}/${MAVLINK_DIALECT_AURELIA}/${MAVLINK_DIALECT_AURELIA}.h PROPERTIES GENERATED true)
+
 # generate the primary dialect
 add_custom_command(
 	OUTPUT ${MAVLINK_LIBRARY_DIR}/${CONFIG_MAVLINK_DIALECT}/${CONFIG_MAVLINK_DIALECT}.h
@@ -65,7 +85,7 @@ add_custom_command(
 		${PYTHON_EXECUTABLE} ${MAVLINK_GIT_DIR}/pymavlink/tools/mavgen.py
 			--lang C --wire-protocol 2.0
 			#--no-validate
-			#--strict-units
+			#--strict-unitscd ..
 			--output ${MAVLINK_LIBRARY_DIR}
 			${MAVLINK_GIT_DIR}/message_definitions/v1.0/${CONFIG_MAVLINK_DIALECT}.xml > ${CMAKE_CURRENT_BINARY_DIR}/mavgen_${CONFIG_MAVLINK_DIALECT}.log
 	DEPENDS
@@ -76,7 +96,10 @@ add_custom_command(
 
 		# generate after uAvionix
 		mavlink_c_generate_uavionix
+		mavlink_c_generate_aurelia
 		${MAVLINK_LIBRARY_DIR}/${MAVLINK_DIALECT_UAVIONIX}/${MAVLINK_DIALECT_UAVIONIX}.h
+		${MAVLINK_LIBRARY_DIR}/${MAVLINK_DIALECT_AURELIA}/${MAVLINK_DIALECT_AURELIA}.h
+
 
 	COMMENT "Generating Mavlink ${CONFIG_MAVLINK_DIALECT}: ${MAVLINK_GIT_DIR_RELATIVE}/message_definitions/v1.0/${CONFIG_MAVLINK_DIALECT}.xml"
 )
@@ -92,12 +115,14 @@ target_sources(mavlink_c
 	INTERFACE
 		${MAVLINK_LIBRARY_DIR}/${CONFIG_MAVLINK_DIALECT}/${CONFIG_MAVLINK_DIALECT}.h
 		${MAVLINK_LIBRARY_DIR}/${MAVLINK_DIALECT_UAVIONIX}/${MAVLINK_DIALECT_UAVIONIX}.h
+		${MAVLINK_LIBRARY_DIR}/${MAVLINK_DIALECT_AURELIA}/${MAVLINK_DIALECT_AURELIA}.h
 )
 target_include_directories(mavlink_c
 	INTERFACE
 		${MAVLINK_LIBRARY_DIR}
 		${MAVLINK_LIBRARY_DIR}/${CONFIG_MAVLINK_DIALECT}
 		${MAVLINK_LIBRARY_DIR}/${MAVLINK_DIALECT_UAVIONIX}
+		${MAVLINK_LIBRARY_DIR}/${MAVLINK_DIALECT_AURELIA}
 )
 
 px4_add_module(
@@ -124,6 +149,7 @@ px4_add_module(
 		mavlink_timesync.cpp
 		mavlink_ulog.cpp
 		MavlinkStatustextHandler.cpp
+		open_drone_id_translations.cpp
 		tune_publisher.cpp
 	MODULE_CONFIG
 		module.yaml
@@ -155,6 +181,7 @@ px4_add_unit_gtest(SRC MavlinkStatustextHandlerTest.cpp
 		${MAVLINK_LIBRARY_DIR}
 		${MAVLINK_LIBRARY_DIR}/${CONFIG_MAVLINK_DIALECT}
 		${MAVLINK_LIBRARY_DIR}/${MAVLINK_DIALECT_UAVIONIX}
+		${MAVLINK_LIBRARY_DIR}/${MAVLINK_DIALECT_AURELIA}
 	COMPILE_FLAGS
 		-Wno-address-of-packed-member # TODO: fix in c_library_v2
 		-Wno-cast-align # TODO: fix
