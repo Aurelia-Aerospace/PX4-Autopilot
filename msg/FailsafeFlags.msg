@@ -32,6 +32,7 @@ bool global_position_invalid          # Global position estimate invalid
 bool auto_mission_missing             # No mission available
 bool offboard_control_signal_lost     # Offboard signal lost
 bool home_position_invalid            # No home position available
+bool fldsmdfr_flying_not_allowed      # Cannot fly in the current area
 
 # Control links
 bool manual_control_signal_lost       # Manual control (RC) signal lost

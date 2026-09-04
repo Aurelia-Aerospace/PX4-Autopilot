@@ -94,6 +94,8 @@ set(msg_files
 	FigureEightStatus.msg
 	FailsafeFlags.msg
 	FailureDetectorStatus.msg
+	FldsmdfrAckMessage.msg
+	FldsmdfrStatus.msg
 	FlightPhaseEstimation.msg
 	FollowTarget.msg
 	FollowTargetEstimator.msg
@@ -151,6 +153,10 @@ set(msg_files
 	ObstacleDistance.msg
 	OffboardControlMode.msg
 	OnboardComputerStatus.msg
+	OpenDroneIdArmStatus.msg
+	OpenDroneIdOperatorId.msg
+	OpenDroneIdSelfId.msg
+	OpenDroneIdSystem.msg
 	OrbitStatus.msg
 	OrbTest.msg
 	OrbTestLarge.msg

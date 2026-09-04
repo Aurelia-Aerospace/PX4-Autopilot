@@ -1,0 +1,4 @@
+uint64 timestamp
+uint8 MAV_AURELIA_UTIL_ACK_REQUEST_NEED = 0
+uint8 MAV_AURELIA_UTIL_ACK_REQUEST_DONE = 1
+uint8 status

@@ -123,8 +123,7 @@ bool safety_off # Set to true if safety is off
 bool power_input_valid                            # set if input power is valid
 bool usb_connected                                # set to true (never cleared) once telemetry received from usb link
 
-bool open_drone_id_system_present
-bool open_drone_id_system_healthy
+uint8 open_drone_id_system_healthy
 
 bool parachute_system_present
 bool parachute_system_healthy
