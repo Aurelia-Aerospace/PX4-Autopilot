@@ -385,6 +385,10 @@
                         "6": {
                             "name": "low_remaining_flight_time",
                             "description": "Remaining flight time low"
+                        },
+                        "7": {
+                            "name": "flying_not_allowed",
+                            "description": "Flying not allowed"
                         }
                     }
                 },

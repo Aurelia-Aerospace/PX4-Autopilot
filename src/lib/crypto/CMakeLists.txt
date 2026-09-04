@@ -31,7 +31,7 @@
 #
 ############################################################################
 
-if (DEFINED PX4_CRYPTO)
+#if (DEFINED PX4_CRYPTO)
 
 px4_add_git_submodule(TARGET git_monocypher PATH "monocypher")
 px4_add_git_submodule(TARGET git_libtomcrypt PATH "libtomcrypt")
@@ -109,4 +109,4 @@ if (NOT DEFINED CONFIG_BUILD_FLAT AND "${PX4_PLATFORM}" MATCHES "nuttx")
 	target_link_libraries(libtommath PRIVATE nuttx_kmm)
 endif()
 
-endif()
+#endif()
