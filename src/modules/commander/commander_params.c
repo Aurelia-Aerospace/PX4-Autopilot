@@ -1044,3 +1044,16 @@ PARAM_DEFINE_FLOAT(COM_THROW_SPEED, 5);
  * @increment 1
  */
 PARAM_DEFINE_INT32(COM_FLTT_LOW_ACT, 3);
+
+/**
+ * Open_Drone_ID: Remote ID module serial number
+ *
+ * Last 5 numbers of UAS_ID parameter from RID module.
+ *
+ * @min -1
+ * @max 9999999
+ * @group Open_Drone_ID
+ * @reboot_required true
+ */
+PARAM_DEFINE_INT32(CPS_RID, 0);
+

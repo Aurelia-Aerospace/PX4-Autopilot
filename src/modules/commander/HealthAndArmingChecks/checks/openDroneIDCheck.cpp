@@ -31,56 +31,81 @@
  *
  ****************************************************************************/
 
-#include "openDroneIDCheck.hpp"
+ #include "openDroneIDCheck.hpp"
 
 
-void OpenDroneIDChecks::checkAndReport(const Context &context, Report &reporter)
-{
-	// Check to see if the check has been disabled
-	if (!_param_com_arm_odid.get()) {
-		return;
-	}
+ void OpenDroneIDChecks::checkAndReport(const Context &context, Report &reporter)
+ {
+	 // Check to see if the check has been disabled
+	 if (!_param_com_arm_odid.get()) {
+		 return;
+	 }
 
-	NavModes affected_modes{NavModes::None};
+	 NavModes affected_modes{NavModes::None};
 
-	if (_param_com_arm_odid.get() == 2) {
-		// disallow arming without the Open Drone ID system
-		affected_modes = NavModes::All;
-	}
+	 if (_param_com_arm_odid.get() == 2) {
+		 // disallow arming without the Open Drone ID system
+		 affected_modes = NavModes::All;
+	 }
 
-	if (!context.status().open_drone_id_system_present) {
-		/* EVENT
-		 * @description
-		 * Open Drone ID system failed to report. Make sure it is setup and installed properly.
-		 *
-		 * <profile name="dev">
-		 * This check can be configured via <param>COM_ARM_ODID</param> parameter.
-		 * </profile>
-		 */
-		reporter.armingCheckFailure(affected_modes, health_component_t::open_drone_id,
-					    events::ID("check_open_drone_id_missing"),
-					    events::Log::Error, "Open Drone ID system missing");
+	 bool failsafe = false;
 
-		if (reporter.mavlink_log_pub()) {
-			mavlink_log_critical(reporter.mavlink_log_pub(), "Preflight Fail: Open Drone ID system missing");
-		}
+	 if (context.status().open_drone_id_system_healthy!=fldsmdfr_status_s::AURELIA_CHECK_STATUS_GOOD_TO_ARM) {
+		const hrt_abstime now = hrt_absolute_time();
+		_fldsmdfr_status_sub.update(&fldsmdfr_status);
+		 //Me quede agregando todo lo de commander
+		 switch(context.status().open_drone_id_system_healthy){
+			 case fldsmdfr_status_s::AURELIA_CHECK_STATUS_FAIL_GENERIC:
+			 case fldsmdfr_status_s::AURELIA_CHECK_STATUS_FAIL_GPS:
+					/* EVENT
+					* @description
+					* FLDSMDFR failure
+					*/
+					reporter.armingCheckFailure(affected_modes, health_component_t::open_drone_id,
+						events::ID("fldsmdfr_failure"),
+						events::Log::Error, "FLDSMDFR: Not ready");
 
-	} else if (!context.status().open_drone_id_system_healthy) {
-		/* EVENT
-		 * @description
-		 * Open Drone ID system reported being unhealthy.
-		 *
-		 * <profile name="dev">
-		 * This check can be configured via <param>COM_ARM_ODID</param> parameter.
-		 * </profile>
-		 */
-		reporter.armingCheckFailure(affected_modes, health_component_t::open_drone_id,
-					    events::ID("check_open_drone_id_unhealthy"),
-					    events::Log::Error, "Open Drone ID system not ready");
+					if (reporter.mavlink_log_pub() && hrt_elapsed_time(&_last_warning_message) > 5_s) {
+						mavlink_log_critical(reporter.mavlink_log_pub(), "FLDSMDFR: %s", fldsmdfr_status.error);
+						_last_warning_message = now;
 
-		if (reporter.mavlink_log_pub()) {
-			mavlink_log_critical(reporter.mavlink_log_pub(), "Preflight Fail: Open Drone ID system not ready");
-		}
+					}
 
-	}
-}
+			 break;
+			 case fldsmdfr_status_s::AURELIA_CHECK_STATUS_FAIL_FLYING_NOT_ALLOWED:
+					/* EVENT
+					* @description
+					* FLDSMDFR Flying not allowed
+					*/
+					reporter.armingCheckFailure(affected_modes, health_component_t::open_drone_id,
+						events::ID("fldsmdfr_fna"),
+						events::Log::Error, "FLDSMDFR: Flying not allowed");
+
+					if (reporter.mavlink_log_pub() && hrt_elapsed_time(&_last_warning_message) > 5_s) {
+						mavlink_log_critical(reporter.mavlink_log_pub(), "FLDSMDFR: %s", fldsmdfr_status.error);
+						_last_warning_message = now;
+					}
+
+
+				 failsafe = true;
+			 break;
+			 case fldsmdfr_status_s::AURELIA_CHECK_STATUS_FAIL_LOST_MODULE:
+
+					/* EVENT
+					* @description
+					* FLDSMDFR system failed to report. Make sure it is setup and installed properly.
+					*/
+					reporter.armingCheckFailure(affected_modes, health_component_t::open_drone_id,
+					events::ID("fldsmdfr_missing"),
+						events::Log::Error, "FLDSMDFR system missing");
+					if (reporter.mavlink_log_pub() && hrt_elapsed_time(&_last_warning_message) > 5_s) {
+						mavlink_log_critical(reporter.mavlink_log_pub(), "FLDSMDFR: system missing");
+						_last_warning_message = now;
+					}
+			 break;
+			 default:
+			 break;
+		 }
+	 }
+	 reporter.failsafeFlags().fldsmdfr_flying_not_allowed = failsafe;
+ }

@@ -31,20 +31,27 @@
  *
  ****************************************************************************/
 
-#pragma once
+ #pragma once
 
-#include "../Common.hpp"
+ #include "../Common.hpp"
+ #include <uORB/topics/fldsmdfr_status.h>
+ #include <uORB/Subscription.hpp>
 
-class OpenDroneIDChecks : public HealthAndArmingCheckBase
-{
-public:
-	OpenDroneIDChecks() = default;
-	~OpenDroneIDChecks() = default;
+ class OpenDroneIDChecks : public HealthAndArmingCheckBase
+ {
+ public:
+	 OpenDroneIDChecks() = default;
+	 ~OpenDroneIDChecks() = default;
 
-	void checkAndReport(const Context &context, Report &reporter) override;
+	 void checkAndReport(const Context &context, Report &reporter) override;
 
-private:
-	DEFINE_PARAMETERS_CUSTOM_PARENT(HealthAndArmingCheckBase,
-					(ParamInt<px4::params::COM_ARM_ODID>) _param_com_arm_odid
-				       )
-};
+ private:
+	 DEFINE_PARAMETERS_CUSTOM_PARENT(HealthAndArmingCheckBase,
+					 (ParamInt<px4::params::COM_ARM_ODID>) _param_com_arm_odid
+					)
+
+	 uORB::Subscription _fldsmdfr_status_sub{ORB_ID(fldsmdfr_status)};
+	 fldsmdfr_status_s fldsmdfr_status;
+	 hrt_abstime _last_warning_message{0};
+
+ };

@@ -230,6 +230,19 @@ static bool broadcast_vehicle_command(const uint32_t cmd, const float param1 = N
 }
 #endif
 
+void Commander::handleFldsmdfrCheck(uint8_t healthy, hrt_abstime timestamp){
+	if (_open_drone_id_system_lost) {
+		_open_drone_id_system_lost = false;
+		if (_datalink_last_heartbeat_open_drone_id_system != 0) {
+			mavlink_log_info(&_mavlink_log_pub, "FLDSMDFR system regained\t");
+			events::send(events::ID("commander_fldsmdfr_regained"), events::Log::Info, "FLDSMDFR system regained");
+		}
+	}
+
+	_datalink_last_heartbeat_open_drone_id_system = timestamp;
+	_vehicle_status.open_drone_id_system_healthy = healthy;
+}
+
 int Commander::custom_command(int argc, char *argv[])
 {
 	if (!is_running()) {
@@ -2680,6 +2693,20 @@ void Commander::enable_hil()
 
 void Commander::dataLinkCheck()
 {
+	bool check_fldsmdfr_mavlink = true;
+
+	//FLDSMDFR CAN check
+	fldsmdfr_status_s fldsmdfr_status;
+
+	if (_fldsmdfr_status_sub.update(&fldsmdfr_status)){
+		if(fldsmdfr_status.status != fldsmdfr_status_s::AURELIA_CHECK_STATUS_FAIL_LOST_MODULE){
+			bool healthy = fldsmdfr_status.status != fldsmdfr_status_s::AURELIA_CHECK_STATUS_GOOD_TO_ARM;
+			handleFldsmdfrCheck(healthy, fldsmdfr_status.timestamp);
+			check_fldsmdfr_mavlink = false;
+		}
+
+	}
+
 	for (auto &telemetry_status :  _telemetry_status_subs) {
 		telemetry_status_s telemetry;
 
@@ -2756,21 +2783,9 @@ void Commander::dataLinkCheck()
 				_vehicle_status.parachute_system_healthy = healthy;
 			}
 
-			if (telemetry.heartbeat_type_open_drone_id) {
-				if (_open_drone_id_system_lost) {
-					_open_drone_id_system_lost = false;
-
-					if (_datalink_last_heartbeat_open_drone_id_system != 0) {
-						mavlink_log_info(&_mavlink_log_pub, "OpenDroneID system regained\t");
-						events::send(events::ID("commander_open_drone_id_regained"), events::Log::Info, "OpenDroneID system regained");
-					}
-				}
-
-				bool healthy = telemetry.open_drone_id_system_healthy;
-
-				_datalink_last_heartbeat_open_drone_id_system = telemetry.timestamp;
-				_vehicle_status.open_drone_id_system_present = true;
-				_vehicle_status.open_drone_id_system_healthy = healthy;
+			if (telemetry.heartbeat_type_open_drone_id && check_fldsmdfr_mavlink) {
+				uint8_t healthy = telemetry.open_drone_id_system_healthy?fldsmdfr_status_s::AURELIA_CHECK_STATUS_GOOD_TO_ARM:fldsmdfr_status_s::AURELIA_CHECK_STATUS_FAIL_GENERIC;
+				handleFldsmdfrCheck(healthy, telemetry.timestamp);
 			}
 
 			if (telemetry.heartbeat_component_obstacle_avoidance) {
@@ -2826,10 +2841,9 @@ void Commander::dataLinkCheck()
 	// OpenDroneID system
 	if ((hrt_elapsed_time(&_datalink_last_heartbeat_open_drone_id_system) > 3_s)
 	    && !_open_drone_id_system_lost) {
-		mavlink_log_critical(&_mavlink_log_pub, "OpenDroneID system lost");
-		events::send(events::ID("commander_open_drone_id_lost"), events::Log::Critical, "OpenDroneID system lost");
-		_vehicle_status.open_drone_id_system_present = false;
-		_vehicle_status.open_drone_id_system_healthy = false;
+		mavlink_log_critical(&_mavlink_log_pub, "FLDSMDFR system lost");
+		events::send(events::ID("commander_fldsmdfr_lost"), events::Log::Critical, "FLDSMDFR system lost");
+		_vehicle_status.open_drone_id_system_healthy = fldsmdfr_status_s::AURELIA_CHECK_STATUS_FAIL_LOST_MODULE;
 		_open_drone_id_system_lost = true;
 		_status_changed = true;
 	}

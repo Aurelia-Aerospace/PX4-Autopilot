@@ -36,7 +36,9 @@
 #include <px4_platform_common/log.h>
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/battery_status.h>
+#include <uORB/topics/sensor_gps.h>
 #include <lib/circuit_breaker/circuit_breaker.h>
+#include <uORB/Subscription.hpp>
 
 using namespace time_literals;
 
@@ -395,6 +397,28 @@ FailsafeBase::ActionOptions Failsafe::fromRemainingFlightTimeLowActParam(int par
 	return options;
 }
 
+FailsafeBase::ActionOptions Failsafe::fldsmdfrFlyingNotAllowed()
+{
+	ActionOptions options{};
+	options.cause = Cause::FlyingNotAllowed;
+	options.clear_condition = ClearCondition::WhenConditionClears;
+	options.allow_user_takeover = UserTakeoverAllowed::Never;
+
+	sensor_gps_s gps{};
+	uORB::SubscriptionData<sensor_gps_s> sensor_gps_sub{ORB_ID(vehicle_status)};
+	if (sensor_gps_sub.copy(&gps)) {
+		if (gps.fix_type >= sensor_gps_s::FIX_TYPE_3D) {
+			options.action = Action::RTL;
+		} else {
+			options.action = Action::Land;
+		}
+	} else {
+		options.action = Action::Land;
+	}
+
+	return options;
+}
+
 void Failsafe::checkStateAndMode(const hrt_abstime &time_us, const State &state,
 				 const failsafe_flags_s &status_flags)
 {
@@ -414,6 +438,8 @@ void Failsafe::checkStateAndMode(const hrt_abstime &time_us, const State &state,
 		_manual_control_lost_at_arming = false;
 	}
 
+	const bool is_multirotor = state.vehicle_type == vehicle_status_s::VEHICLE_TYPE_ROTARY_WING;
+
 	const bool rc_loss_ignored_mission = state.user_intended_mode == vehicle_status_s::NAVIGATION_STATE_AUTO_MISSION
 					     && (_param_com_rcl_except.get() & (int)ManualControlLossExceptionBits::Mission);
 	const bool rc_loss_ignored_loiter = state.user_intended_mode == vehicle_status_s::NAVIGATION_STATE_AUTO_LOITER
@@ -425,6 +451,12 @@ void Failsafe::checkStateAndMode(const hrt_abstime &time_us, const State &state,
 					     && (_param_com_rcl_except.get() & (int)ManualControlLossExceptionBits::Hold);
 	const bool rc_loss_ignored = rc_loss_ignored_mission || rc_loss_ignored_loiter || rc_loss_ignored_offboard ||
 				     rc_loss_ignored_takeoff || ignore_link_failsafe || _manual_control_lost_at_arming;
+
+
+	if(is_multirotor){
+		CHECK_FAILSAFE(status_flags, fldsmdfr_flying_not_allowed,
+			ActionOptions(fldsmdfrFlyingNotAllowed()));
+	}
 
 	if (_param_com_rc_in_mode.get() != int32_t(RcInMode::StickInputDisabled) && !rc_loss_ignored) {
 		CHECK_FAILSAFE(status_flags, manual_control_signal_lost,

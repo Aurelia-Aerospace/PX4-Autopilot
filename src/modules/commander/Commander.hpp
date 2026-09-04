@@ -83,6 +83,7 @@
 #include <uORB/topics/vehicle_global_position.h>
 #include <uORB/topics/vehicle_land_detected.h>
 #include <uORB/topics/vtol_vehicle_status.h>
+#include <uORB/topics/fldsmdfr_status.h>
 
 using math::constrain;
 using systemlib::Hysteresis;
@@ -126,6 +127,8 @@ public:
 private:
 	bool isArmed() const { return (_vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED); }
 	static ModeChangeSource getSourceFromCommand(const vehicle_command_s &cmd);
+
+	void handleFldsmdfrCheck(uint8_t healthy, hrt_abstime timestamp);
 
 	void answer_command(const vehicle_command_s &cmd, uint8_t result);
 
@@ -296,6 +299,7 @@ private:
 	uORB::Subscription					_vehicle_command_mode_executor_sub{ORB_ID(vehicle_command_mode_executor)};
 	uORB::Subscription					_vehicle_land_detected_sub{ORB_ID(vehicle_land_detected)};
 	uORB::Subscription					_vtol_vehicle_status_sub{ORB_ID(vtol_vehicle_status)};
+	uORB::Subscription					_fldsmdfr_status_sub{ORB_ID(fldsmdfr_status)};
 
 	uORB::SubscriptionInterval				_parameter_update_sub{ORB_ID(parameter_update), 1_s};
 
