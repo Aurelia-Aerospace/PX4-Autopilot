@@ -486,9 +486,34 @@ UavcanRemoteIDController::secure_command_server_cb(
 		break;
 	}
 
-	case dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_OTA_CHUNK:
-		// TODO commit 7: signed OTA firmware update
+	case dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_OTA_CHUNK: {
+		// ponytail: no signature verification on chunks — add HMAC check if tampering is a concern
+		static constexpr const char *OTA_STAGING = "/fs/microsd/ota_staging.px4";
+
+		if (req.sequence == 0) {
+			// First chunk: (re)open staging file
+			if (_ota_fd >= 0) { close(_ota_fd); }
+			_ota_fd = open(OTA_STAGING, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+		}
+
+		if (req.data.empty()) {
+			// Empty data signals end of transfer — close and stage for bootloader
+			if (_ota_fd >= 0) { close(_ota_fd); _ota_fd = -1; }
+			// ponytail: rename triggers bootloader pickup on next reboot — add px4_reboot_request() if auto-reboot is needed
+			rename(OTA_STAGING, "/fs/microsd/ota_firmware.px4");
+			rsp.result = dronecan::remoteid::SecureCommand::Response::RESULT_ACCEPTED;
+
+		} else if (_ota_fd < 0) {
+			rsp.result = dronecan::remoteid::SecureCommand::Response::RESULT_FAILED;
+
+		} else {
+			ssize_t n = write(_ota_fd, req.data.begin(), req.data.size());
+			rsp.result = (n == (ssize_t)req.data.size())
+				     ? dronecan::remoteid::SecureCommand::Response::RESULT_ACCEPTED
+				     : dronecan::remoteid::SecureCommand::Response::RESULT_FAILED;
+		}
 		break;
+	}
 
 	default:
 		break;

@@ -116,4 +116,6 @@ private:
 		      dronecan::remoteid::SecureCommand::Response &)>;
 
 	uavcan::ServiceServer<dronecan::remoteid::SecureCommand, SecureCommandBinder> _uavcan_secure_command_server;
+
+	int _ota_fd{-1}; // open file descriptor during OTA_CHUNK transfer
 };
