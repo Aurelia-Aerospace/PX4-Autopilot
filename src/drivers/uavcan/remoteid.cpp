@@ -47,7 +47,8 @@ UavcanRemoteIDController::UavcanRemoteIDController(uavcan::INode &node) :
 	_uavcan_pub_remoteid_self_id(node),
 	_uavcan_pub_remoteid_system(node),
 	_uavcan_pub_remoteid_operator_id(node),
-	_uavcan_sub_arm_status(node)
+	_uavcan_sub_arm_status(node),
+	_uavcan_secure_command_server(node)
 {
 }
 
@@ -61,6 +62,14 @@ int UavcanRemoteIDController::init()
 
 	if (res < 0) {
 		PX4_WARN("ArmStatus sub failed %i", res);
+		return res;
+	}
+
+	res = _uavcan_secure_command_server.start(
+		      SecureCommandBinder(this, &UavcanRemoteIDController::secure_command_server_cb));
+
+	if (res < 0) {
+		PX4_WARN("SecureCommand server failed %i", res);
 		return res;
 	}
 
@@ -353,4 +362,28 @@ UavcanRemoteIDController::arm_status_sub_cb(const uavcan::ReceivedDataStructure<
 	memcpy(arm_status.error, msg.error.c_str(), sizeof(arm_status.error));
 
 	_open_drone_id_arm_status_pub.publish(arm_status);
+}
+
+void
+UavcanRemoteIDController::secure_command_server_cb(
+	const uavcan::ReceivedDataStructure<dronecan::remoteid::SecureCommand::Request> &req,
+	dronecan::remoteid::SecureCommand::Response &rsp)
+{
+	rsp.sequence  = req.sequence;
+	rsp.operation = req.operation;
+	rsp.result    = dronecan::remoteid::SecureCommand::Response::RESULT_UNSUPPORTED;
+
+	switch (req.operation) {
+	case dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_AUTH_CHALLENGE:
+	case dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GENERATE_RID_KEY:
+		// TODO commit 5: keypair auth and key provisioning
+		break;
+
+	case dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_OTA_CHUNK:
+		// TODO commit 6: signed OTA firmware update
+		break;
+
+	default:
+		break;
+	}
 }

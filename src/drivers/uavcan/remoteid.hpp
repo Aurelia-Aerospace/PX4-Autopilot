@@ -53,6 +53,7 @@
 #include <dronecan/remoteid/System.hpp>
 #include <dronecan/remoteid/ArmStatus.hpp>
 #include <dronecan/remoteid/OperatorID.hpp>
+#include <dronecan/remoteid/SecureCommand.hpp>
 
 #include <px4_platform_common/module_params.h>
 
@@ -81,6 +82,10 @@ private:
 
 	void arm_status_sub_cb(const uavcan::ReceivedDataStructure<dronecan::remoteid::ArmStatus> &msg);
 
+	void secure_command_server_cb(
+		const uavcan::ReceivedDataStructure<dronecan::remoteid::SecureCommand::Request> &req,
+		dronecan::remoteid::SecureCommand::Response &rsp);
+
 	uavcan::INode &_node;
 
 	uORB::Subscription _vehicle_gps_position_sub{ORB_ID(vehicle_gps_position)};
@@ -104,4 +109,11 @@ private:
 	      void (UavcanRemoteIDController::*)(const uavcan::ReceivedDataStructure<dronecan::remoteid::ArmStatus> &) >;
 
 	uavcan::Subscriber<dronecan::remoteid::ArmStatus, ArmStatusBinder> _uavcan_sub_arm_status;
+
+	using SecureCommandBinder = uavcan::MethodBinder<UavcanRemoteIDController *,
+	      void (UavcanRemoteIDController::*)(
+		      const uavcan::ReceivedDataStructure<dronecan::remoteid::SecureCommand::Request> &,
+		      dronecan::remoteid::SecureCommand::Response &)>;
+
+	uavcan::ServiceServer<dronecan::remoteid::SecureCommand, SecureCommandBinder> _uavcan_secure_command_server;
 };
