@@ -201,3 +201,7 @@ px4_add_module(
 		# within libuavcan
 		uavcan
 	)
+
+if(DEFINED PX4_CRYPTO)
+	target_link_libraries(drivers__uavcan PRIVATE monocypher px4_random)
+endif()

@@ -37,6 +37,11 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#ifdef PX4_CRYPTO
+#include <optional/monocypher-ed25519.h>
+#include <px4_random.h>
+#endif
+
 using namespace time_literals;
 
 // ponytail: SD-backed key file — upgrade to dedicated MTD partition if SD-less operation is required
@@ -60,6 +65,29 @@ static int rid_key_write(const uint8_t *buf, size_t len)
 	close(fd);
 	return (n == (ssize_t)len) ? 0 : -1;
 }
+
+#ifdef PX4_CRYPTO
+// ponytail: secret key on SD — upgrade to HSM/eFuse if hardware supports it
+static constexpr const char *RID_SECKEY_PATH = "/fs/microsd/rid_seckey.bin";
+
+static int rid_seckey_read(uint8_t *buf, size_t len)
+{
+	int fd = open(RID_SECKEY_PATH, O_RDONLY);
+	if (fd < 0) { return -1; }
+	ssize_t n = read(fd, buf, len);
+	close(fd);
+	return (n == (ssize_t)len) ? 0 : -1;
+}
+
+static int rid_seckey_write(const uint8_t *buf, size_t len)
+{
+	int fd = open(RID_SECKEY_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	if (fd < 0) { return -1; }
+	ssize_t n = write(fd, buf, len);
+	close(fd);
+	return (n == (ssize_t)len) ? 0 : -1;
+}
+#endif
 
 
 UavcanRemoteIDController::UavcanRemoteIDController(uavcan::INode &node) :
@@ -422,10 +450,41 @@ UavcanRemoteIDController::secure_command_server_cb(
 		break;
 	}
 
-	case dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_AUTH_CHALLENGE:
-	case dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GENERATE_RID_KEY:
-		// TODO commit 6: keypair auth and key provisioning
+	case dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GENERATE_RID_KEY: {
+#ifdef PX4_CRYPTO
+		uint8_t seed[32], public_key[32];
+		if (px4_get_secure_random(seed, sizeof(seed)) != sizeof(seed)) {
+			rsp.result = dronecan::remoteid::SecureCommand::Response::RESULT_FAILED;
+			break;
+		}
+		crypto_ed25519_public_key(public_key, seed);
+		if (rid_seckey_write(seed, sizeof(seed)) != 0 || rid_key_write(public_key, sizeof(public_key)) != 0) {
+			rsp.result = dronecan::remoteid::SecureCommand::Response::RESULT_FAILED;
+			break;
+		}
+		for (uint8_t b : public_key) { rsp.data.push_back(b); }
+		rsp.result = dronecan::remoteid::SecureCommand::Response::RESULT_ACCEPTED;
+		crypto_wipe(seed, sizeof(seed));
+#endif
 		break;
+	}
+
+	case dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_AUTH_CHALLENGE: {
+#ifdef PX4_CRYPTO
+		uint8_t secret_key[32], public_key[32], signature[64];
+		if (rid_seckey_read(secret_key, sizeof(secret_key)) != 0 || rid_key_read(public_key, sizeof(public_key)) != 0) {
+			rsp.result = dronecan::remoteid::SecureCommand::Response::RESULT_FAILED;
+			break;
+		}
+		const uint8_t *msg = req.data.begin();
+		const size_t   msg_len = req.data.size();
+		crypto_ed25519_sign(signature, secret_key, public_key, msg, msg_len);
+		for (uint8_t b : signature) { rsp.data.push_back(b); }
+		rsp.result = dronecan::remoteid::SecureCommand::Response::RESULT_ACCEPTED;
+		crypto_wipe(secret_key, sizeof(secret_key));
+#endif
+		break;
+	}
 
 	case dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_OTA_CHUNK:
 		// TODO commit 7: signed OTA firmware update
