@@ -34,8 +34,32 @@
 #include "remoteid.hpp"
 #include <modules/mavlink/open_drone_id_translations.hpp>
 #include <drivers/drv_hrt.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 using namespace time_literals;
+
+// ponytail: SD-backed key file — upgrade to dedicated MTD partition if SD-less operation is required
+static constexpr const char *RID_KEY_PATH = "/fs/microsd/rid_pubkey.bin";
+static constexpr size_t RID_KEY_LEN = 32; // Ed25519 public key
+
+static int rid_key_read(uint8_t *buf, size_t len)
+{
+	int fd = open(RID_KEY_PATH, O_RDONLY);
+	if (fd < 0) { return -1; }
+	ssize_t n = read(fd, buf, len);
+	close(fd);
+	return (n == (ssize_t)len) ? 0 : -1;
+}
+
+static int rid_key_write(const uint8_t *buf, size_t len)
+{
+	int fd = open(RID_KEY_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	if (fd < 0) { return -1; }
+	ssize_t n = write(fd, buf, len);
+	close(fd);
+	return (n == (ssize_t)len) ? 0 : -1;
+}
 
 
 UavcanRemoteIDController::UavcanRemoteIDController(uavcan::INode &node) :
@@ -374,13 +398,37 @@ UavcanRemoteIDController::secure_command_server_cb(
 	rsp.result    = dronecan::remoteid::SecureCommand::Response::RESULT_UNSUPPORTED;
 
 	switch (req.operation) {
+	case dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GET_PUBLIC_KEYS: {
+		uint8_t key[RID_KEY_LEN] {};
+		if (rid_key_read(key, sizeof(key)) == 0) {
+			for (uint8_t b : key) { rsp.data.push_back(b); }
+			rsp.result = dronecan::remoteid::SecureCommand::Response::RESULT_ACCEPTED;
+		} else {
+			rsp.result = dronecan::remoteid::SecureCommand::Response::RESULT_FAILED;
+		}
+		break;
+	}
+
+	case dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_SET_PUBLIC_KEYS: {
+		if (req.data.size() == RID_KEY_LEN) {
+			uint8_t key[RID_KEY_LEN];
+			for (size_t i = 0; i < RID_KEY_LEN; ++i) { key[i] = req.data[i]; }
+			rsp.result = (rid_key_write(key, sizeof(key)) == 0)
+				     ? dronecan::remoteid::SecureCommand::Response::RESULT_ACCEPTED
+				     : dronecan::remoteid::SecureCommand::Response::RESULT_FAILED;
+		} else {
+			rsp.result = dronecan::remoteid::SecureCommand::Response::RESULT_DENIED;
+		}
+		break;
+	}
+
 	case dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_AUTH_CHALLENGE:
 	case dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GENERATE_RID_KEY:
-		// TODO commit 5: keypair auth and key provisioning
+		// TODO commit 6: keypair auth and key provisioning
 		break;
 
 	case dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_OTA_CHUNK:
-		// TODO commit 6: signed OTA firmware update
+		// TODO commit 7: signed OTA firmware update
 		break;
 
 	default:
