@@ -1,7 +1,7 @@
 [submodule "src/modules/mavlink/mavlink"]
 	path = src/modules/mavlink/mavlink
-	url = https://github.com/mavlink/mavlink.git
-	branch = master
+	url = git@github.com:Aurelia-Aerospace/mavlink.git
+	branch = aurelia
 [submodule "Tools/simulation/jmavsim/jMAVSim"]
 	path = Tools/simulation/jmavsim/jMAVSim
 	url = https://github.com/PX4/jMAVSim.git
@@ -85,7 +85,8 @@
 	branch = master
 [submodule "src/drivers/uavcan/libdronecan/dsdl"]
 	path = src/drivers/uavcan/libdronecan/dsdl
-	url = https://github.com/PX4/DSDL.git
+	url = git@github.com:Aurelia-Aerospace/DSDL.git
+	branch = aurelia
 [submodule "src/drivers/uavcan/libdronecan/libuavcan/dsdl_compiler/pydronecan"]
 	path = src/drivers/uavcan/libdronecan/libuavcan/dsdl_compiler/pydronecan
 	url = https://github.com/dronecan/pydronecan
