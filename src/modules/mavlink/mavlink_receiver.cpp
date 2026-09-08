@@ -281,6 +281,12 @@ MavlinkReceiver::handle_message(mavlink_message_t *msg)
 		handle_message_open_drone_id_system(msg);
 		break;
 
+#if defined(MAVLINK_MSG_ID_SECURE_COMMAND)
+	case MAVLINK_MSG_ID_SECURE_COMMAND:
+		handle_message_secure_command(msg);
+		break;
+#endif
+
 #if !defined(CONSTRAINED_FLASH)
 
 	case MAVLINK_MSG_ID_NAMED_VALUE_FLOAT:
@@ -3119,6 +3125,25 @@ void MavlinkReceiver::handle_message_open_drone_id_system(
 
 	_open_drone_id_system_pub.publish(odid_system);
 }
+
+#if defined(MAVLINK_MSG_ID_SECURE_COMMAND)
+void MavlinkReceiver::handle_message_secure_command(mavlink_message_t *msg)
+{
+	mavlink_secure_command_t sc;
+	mavlink_msg_secure_command_decode(msg, &sc);
+
+	secure_command_request_s req{};
+	req.timestamp   = hrt_absolute_time();
+	req.sequence    = sc.sequence;
+	req.operation   = sc.operation;
+	req.data_length = sc.data_length;
+	req.sig_length  = sc.sig_length;
+	memcpy(req.data, sc.data, sizeof(req.data));
+
+	_secure_command_request_pub.publish(req);
+}
+#endif
+
 void
 MavlinkReceiver::run()
 {

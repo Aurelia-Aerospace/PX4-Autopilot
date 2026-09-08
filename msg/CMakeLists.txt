@@ -66,6 +66,7 @@ set(msg_files
 	DifferentialPressure.msg
 	DistanceSensor.msg
 	DistanceSensorModeChangeRequest.msg
+	AureliaOdidStatus.msg
 	DronecanNodeStatus.msg
 	Ekf2Timestamps.msg
 	EscReport.msg
@@ -189,6 +190,8 @@ set(msg_files
 	RtlStatus.msg
 	RtlTimeEstimate.msg
 	SatelliteInfo.msg
+	SecureCommandReply.msg
+	SecureCommandRequest.msg
 	SensorAccel.msg
 	SensorAccelFifo.msg
 	SensorBaro.msg

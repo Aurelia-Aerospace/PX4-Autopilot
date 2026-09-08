@@ -100,7 +100,9 @@ UavcanRemoteIDController::UavcanRemoteIDController(uavcan::INode &node) :
 	_uavcan_pub_remoteid_system(node),
 	_uavcan_pub_remoteid_operator_id(node),
 	_uavcan_sub_arm_status(node),
-	_uavcan_secure_command_server(node)
+	_uavcan_secure_command_server(node),
+	_uavcan_sub_aurelia_status(node),
+	_uavcan_secure_command_client(node)
 {
 }
 
@@ -125,6 +127,17 @@ int UavcanRemoteIDController::init()
 		return res;
 	}
 
+	res = _uavcan_sub_aurelia_status.start(
+		      AureliaStatusBinder(this, &UavcanRemoteIDController::aurelia_status_sub_cb));
+
+	if (res < 0) {
+		PX4_WARN("AureliaStatus sub failed %i", res);
+		return res;
+	}
+
+	_uavcan_secure_command_client.setCallback(
+		SecureCommandClientBinder(this, &UavcanRemoteIDController::secure_command_client_cb));
+
 	return 0;
 }
 
@@ -137,6 +150,23 @@ void UavcanRemoteIDController::periodic_update(const uavcan::TimerEvent &)
 	send_self_id();
 	send_system();
 	send_operator_id();
+
+	if (_rid_node_id != 0 && _secure_command_request_sub.updated()) {
+		secure_command_request_s req{};
+		_secure_command_request_sub.copy(&req);
+
+		dronecan::remoteid::SecureCommand::Request dronecan_req{};
+		dronecan_req.sequence    = req.sequence;
+		dronecan_req.operation   = req.operation;
+		dronecan_req.data_length = req.data_length;
+		dronecan_req.sig_length  = req.sig_length;
+
+		for (uint8_t i = 0; i < req.data_length && i < sizeof(req.data); ++i) {
+			dronecan_req.data.push_back(req.data[i]);
+		}
+
+		_uavcan_secure_command_client.call(uavcan::NodeID(_rid_node_id), dronecan_req);
+	}
 }
 
 void UavcanRemoteIDController::send_basic_id()
@@ -518,4 +548,45 @@ UavcanRemoteIDController::secure_command_server_cb(
 	default:
 		break;
 	}
+}
+
+void UavcanRemoteIDController::aurelia_status_sub_cb(
+	const uavcan::ReceivedDataStructure<dronecan::aurelia::remoteid::Status> &msg)
+{
+	_rid_node_id = msg.getSrcNodeID().get();
+
+	aurelia_odid_status_s status{};
+	status.timestamp = hrt_absolute_time();
+	status.status    = msg.status;
+	memcpy(status.error, msg.error.c_str(), sizeof(status.error));
+	_aurelia_odid_status_pub.publish(status);
+}
+
+void UavcanRemoteIDController::secure_command_client_cb(
+	const uavcan::ServiceCallResult<dronecan::remoteid::SecureCommand> &result)
+{
+	secure_command_reply_s reply{};
+	reply.timestamp = hrt_absolute_time();
+
+	if (!result.isSuccessful()) {
+		reply.result = 4; // MAV_RESULT_FAILED
+		_secure_command_reply_pub.publish(reply);
+		return;
+	}
+
+	const auto &rsp = result.getResponse();
+	reply.sequence    = rsp.sequence;
+	reply.operation   = rsp.operation;
+	reply.data_length = rsp.data.size();
+	memcpy(reply.data, rsp.data.begin(), reply.data_length);
+
+	static constexpr uint8_t to_mav_result[4] = {
+		0, // RESULT_ACCEPTED  → MAV_RESULT_ACCEPTED
+		2, // RESULT_DENIED    → MAV_RESULT_DENIED
+		4, // RESULT_FAILED    → MAV_RESULT_FAILED
+		3, // RESULT_UNSUPPORTED → MAV_RESULT_UNSUPPORTED
+	};
+	reply.result = (rsp.result < 4) ? to_mav_result[rsp.result] : 4;
+
+	_secure_command_reply_pub.publish(reply);
 }

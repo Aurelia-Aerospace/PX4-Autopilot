@@ -45,6 +45,9 @@
 #include <uORB/topics/open_drone_id_arm_status.h>
 #include <uORB/topics/open_drone_id_self_id.h>
 #include <uORB/topics/open_drone_id_system.h>
+#include <uORB/topics/aurelia_odid_status.h>
+#include <uORB/topics/secure_command_request.h>
+#include <uORB/topics/secure_command_reply.h>
 
 #include <uavcan/uavcan.hpp>
 #include <dronecan/remoteid/BasicID.hpp>
@@ -54,6 +57,7 @@
 #include <dronecan/remoteid/ArmStatus.hpp>
 #include <dronecan/remoteid/OperatorID.hpp>
 #include <dronecan/remoteid/SecureCommand.hpp>
+#include <dronecan/aurelia/remoteid/Status.hpp>
 
 #include <px4_platform_common/module_params.h>
 
@@ -86,6 +90,11 @@ private:
 		const uavcan::ReceivedDataStructure<dronecan::remoteid::SecureCommand::Request> &req,
 		dronecan::remoteid::SecureCommand::Response &rsp);
 
+	void aurelia_status_sub_cb(const uavcan::ReceivedDataStructure<dronecan::aurelia::remoteid::Status> &msg);
+
+	void secure_command_client_cb(
+		const uavcan::ServiceCallResult<dronecan::remoteid::SecureCommand> &result);
+
 	uavcan::INode &_node;
 
 	uORB::Subscription _vehicle_gps_position_sub{ORB_ID(vehicle_gps_position)};
@@ -116,6 +125,24 @@ private:
 		      dronecan::remoteid::SecureCommand::Response &)>;
 
 	uavcan::ServiceServer<dronecan::remoteid::SecureCommand, SecureCommandBinder> _uavcan_secure_command_server;
+
+	using AureliaStatusBinder = uavcan::MethodBinder<UavcanRemoteIDController *,
+	      void (UavcanRemoteIDController::*)(
+		      const uavcan::ReceivedDataStructure<dronecan::aurelia::remoteid::Status> &)>;
+
+	uavcan::Subscriber<dronecan::aurelia::remoteid::Status, AureliaStatusBinder> _uavcan_sub_aurelia_status;
+
+	using SecureCommandClientBinder = uavcan::MethodBinder<UavcanRemoteIDController *,
+	      void (UavcanRemoteIDController::*)(
+		      const uavcan::ServiceCallResult<dronecan::remoteid::SecureCommand> &)>;
+
+	uavcan::ServiceClient<dronecan::remoteid::SecureCommand, SecureCommandClientBinder> _uavcan_secure_command_client;
+
+	uORB::Publication<aurelia_odid_status_s>   _aurelia_odid_status_pub{ORB_ID(aurelia_odid_status)};
+	uORB::Publication<secure_command_reply_s>  _secure_command_reply_pub{ORB_ID(secure_command_reply)};
+	uORB::Subscription                         _secure_command_request_sub{ORB_ID(secure_command_request)};
+
+	uint8_t _rid_node_id{0}; // learned from first aurelia Status message
 
 	int _ota_fd{-1}; // open file descriptor during OTA_CHUNK transfer
 };
