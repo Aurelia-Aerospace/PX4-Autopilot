@@ -15,6 +15,9 @@ param set-default SENS_EN_THERMAL 0
 # ODID: enforce RemoteID system presence before arming
 param set-default COM_ARM_ODID 2
 
+# ODID: RTL when ODID module reports flying not allowed (falls back to Land without GPS)
+param set-default COM_ODID_FS_ACT 2
+
 # ODID: enable DroneCAN with ESC/servo control
 param set-default UAVCAN_ENABLE 2
 

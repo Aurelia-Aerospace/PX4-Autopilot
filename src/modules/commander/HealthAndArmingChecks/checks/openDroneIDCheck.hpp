@@ -34,6 +34,8 @@
 #pragma once
 
 #include "../Common.hpp"
+#include <uORB/Subscription.hpp>
+#include <uORB/topics/aurelia_odid_status.h>
 
 class OpenDroneIDChecks : public HealthAndArmingCheckBase
 {
@@ -45,6 +47,9 @@ public:
 
 private:
 	DEFINE_PARAMETERS_CUSTOM_PARENT(HealthAndArmingCheckBase,
-					(ParamInt<px4::params::COM_ARM_ODID>) _param_com_arm_odid
+					(ParamInt<px4::params::COM_ARM_ODID>)   _param_com_arm_odid,
+					(ParamInt<px4::params::COM_ODID_FS_ACT>) _param_com_odid_fs_act
 				       )
+
+	uORB::Subscription _aurelia_odid_status_sub{ORB_ID(aurelia_odid_status)};
 };

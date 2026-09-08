@@ -844,6 +844,21 @@ PARAM_DEFINE_INT32(COM_ARM_HFLT_CHK, 1);
 PARAM_DEFINE_INT32(COM_ARM_ODID, 0);
 
 /**
+ * ODID flying-not-allowed in-flight failsafe action
+ *
+ * Action to take when the Open Drone ID module reports that flying
+ * is not allowed (e.g. restricted airspace).
+ * RTL will fall back to Land if global position is unavailable.
+ *
+ * @group Commander
+ * @value 0 Disabled
+ * @value 1 Warning only
+ * @value 2 RTL
+ * @value 3 Land
+ */
+PARAM_DEFINE_INT32(COM_ODID_FS_ACT, 0);
+
+/**
  * Enforced delay between arming and further navigation
  *
  * The minimal time from arming the motors until moving the vehicle is possible is COM_SPOOLUP_TIME seconds.

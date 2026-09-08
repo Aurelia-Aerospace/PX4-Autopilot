@@ -32,7 +32,9 @@
  ****************************************************************************/
 
 #include "openDroneIDCheck.hpp"
+#include <drivers/drv_hrt.h>
 
+using namespace time_literals;
 
 void OpenDroneIDChecks::checkAndReport(const Context &context, Report &reporter)
 {
@@ -81,6 +83,24 @@ void OpenDroneIDChecks::checkAndReport(const Context &context, Report &reporter)
 		if (reporter.mavlink_log_pub()) {
 			mavlink_log_critical(reporter.mavlink_log_pub(), "Preflight Fail: Open Drone ID system not ready");
 		}
+	}
 
+	// In-flight: check ODID module flying_allowed status
+	bool flying_not_allowed = false;
+
+	if (_param_com_odid_fs_act.get() > 0) {
+		aurelia_odid_status_s aurelia_status{};
+
+		if (_aurelia_odid_status_sub.copy(&aurelia_status)
+		    && hrt_elapsed_time(&aurelia_status.timestamp) < 5_s) {
+			// MAV_AURELIA_CHECK_STATUS_FAIL_FLYING_NOT_ALLOWED == 3
+			flying_not_allowed = (aurelia_status.status == 3);
+		}
+	}
+
+	reporter.failsafeFlags().odid_flying_not_allowed = flying_not_allowed;
+
+	if (flying_not_allowed && reporter.mavlink_log_pub()) {
+		mavlink_log_critical(reporter.mavlink_log_pub(), "ODID: flying not allowed");
 	}
 }
