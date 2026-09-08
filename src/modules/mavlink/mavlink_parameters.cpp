@@ -41,10 +41,33 @@
  */
 
 #include <stdio.h>
+#include <string.h>
 
 #include "mavlink_parameters.h"
 #include "mavlink_main.h"
 #include <lib/systemlib/mavlink_log.h>
+
+PARAM_DEFINE_INT32(FW_LOCK, 0);
+PARAM_DEFINE_INT32(FW_SN, 0);
+
+// ponytail: hardcoded list — add runtime config if boards diverge
+static const char *const _fw_locked_params[] = {
+	"FW_LOCK", "FW_SN", "COM_ARM_ODID", "UAVCAN_ENABLE", nullptr
+};
+
+static bool fw_param_is_locked(const char *name)
+{
+	static param_t fw_lock = PARAM_INVALID;
+	if (fw_lock == PARAM_INVALID) { fw_lock = param_find("FW_LOCK"); }
+	if (fw_lock == PARAM_INVALID) { return false; }
+	int32_t locked = 0;
+	param_get(fw_lock, &locked);
+	if (!locked) { return false; }
+	for (const char *const *p = _fw_locked_params; *p; ++p) {
+		if (strcmp(name, *p) == 0) { return true; }
+	}
+	return false;
+}
 
 MavlinkParametersManager::MavlinkParametersManager(Mavlink &mavlink) :
 	_mavlink(mavlink)
@@ -129,6 +152,10 @@ MavlinkParametersManager::handle_message(const mavlink_message_t *msg)
 				} else if (!((param_type(param) == PARAM_TYPE_INT32 && set.param_type == MAV_PARAM_TYPE_INT32) ||
 					     (param_type(param) == PARAM_TYPE_FLOAT && set.param_type == MAV_PARAM_TYPE_REAL32))) {
 					PX4_ERR("param types mismatch param: %s", name);
+
+				} else if (fw_param_is_locked(name)) {
+					// Param is locked — acknowledge with current value, reject write
+					send_param(param);
 
 				} else {
 					// According to the mavlink spec we should always acknowledge a write operation.
