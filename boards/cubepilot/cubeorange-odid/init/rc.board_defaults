@@ -1,0 +1,27 @@
+#!/bin/sh
+#
+# board specific defaults
+#------------------------------------------------------------------------------
+
+param set-default BAT1_V_DIV 10.1
+param set-default BAT2_V_DIV 10.1
+
+param set-default BAT1_A_PER_V 17
+param set-default BAT2_A_PER_V 17
+
+# Disable IMU thermal control
+param set-default SENS_EN_THERMAL 0
+
+param set-default -s SENS_TEMP_ID 2621474
+
+# ODID: enforce RemoteID system presence before arming
+param set-default COM_ARM_ODID 2
+
+# ODID: enable DroneCAN with ESC/servo control
+param set-default UAVCAN_ENABLE 2
+
+# ODID: firmware lock and serial number (written at manufacturing via SecureCommand)
+param set-default -s FW_LOCK 1
+param set-default -s FW_SN 0
+
+set IOFW "/etc/extras/cubepilot_io-v2_default.bin"
