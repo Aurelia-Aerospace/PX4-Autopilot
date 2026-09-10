@@ -40,6 +40,12 @@
 #ifdef PX4_CRYPTO
 #include <optional/monocypher-ed25519.h>
 #include <px4_random.h>
+#include <keystore_backend_definitions.h>
+extern "C" {
+keystore_session_handle_t keystore_open(void);
+void                      keystore_close(keystore_session_handle_t *handle);
+size_t                    keystore_get_key(keystore_session_handle_t handle, uint8_t idx, uint8_t *key_buf, size_t key_buf_size);
+}
 #endif
 
 using namespace time_literals;
@@ -101,7 +107,6 @@ UavcanRemoteIDController::UavcanRemoteIDController(uavcan::INode &node) :
 	_uavcan_pub_remoteid_operator_id(node),
 	_uavcan_sub_arm_status(node),
 	_uavcan_secure_command_server(node),
-	_uavcan_sub_aurelia_status(node),
 	_uavcan_secure_command_client(node)
 {
 }
@@ -127,14 +132,6 @@ int UavcanRemoteIDController::init()
 		return res;
 	}
 
-	res = _uavcan_sub_aurelia_status.start(
-		      AureliaStatusBinder(this, &UavcanRemoteIDController::aurelia_status_sub_cb));
-
-	if (res < 0) {
-		PX4_WARN("AureliaStatus sub failed %i", res);
-		return res;
-	}
-
 	_uavcan_secure_command_client.setCallback(
 		SecureCommandClientBinder(this, &UavcanRemoteIDController::secure_command_client_cb));
 
@@ -151,21 +148,42 @@ void UavcanRemoteIDController::periodic_update(const uavcan::TimerEvent &)
 	send_system();
 	send_operator_id();
 
-	if (_rid_node_id != 0 && _secure_command_request_sub.updated()) {
+	if (_secure_command_request_sub.updated()) {
 		secure_command_request_s req{};
 		_secure_command_request_sub.copy(&req);
 
-		dronecan::remoteid::SecureCommand::Request dronecan_req{};
-		dronecan_req.sequence    = req.sequence;
-		dronecan_req.operation   = req.operation;
-		dronecan_req.data_length = req.data_length;
-		dronecan_req.sig_length  = req.sig_length;
+		const bool is_session_cmd =
+			req.operation == dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GET_SESSION_KEY ||
+			req.operation == dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GET_REMOTEID_SESSION_KEY;
 
-		for (uint8_t i = 0; i < req.data_length && i < sizeof(req.data); ++i) {
-			dronecan_req.data.push_back(req.data[i]);
+		if (is_session_cmd) {
+			// Session key is always handled locally — needed before forwarding any other command
+#ifdef PX4_CRYPTO
+			handle_secure_command_local(req);
+#endif
+
+		} else if (_rid_node_id != 0) {
+			// All other commands go to the external DroneCAN RID module
+			dronecan::remoteid::SecureCommand::Request dronecan_req{};
+			dronecan_req.sequence   = req.sequence;
+			dronecan_req.operation  = req.operation;
+			dronecan_req.sig_length = req.sig_length;
+
+			for (uint8_t i = 0; i < req.data_length && i < sizeof(req.data); ++i) {
+				dronecan_req.data.push_back(req.data[i]);
+			}
+
+			_uavcan_secure_command_client.call(uavcan::NodeID(_rid_node_id), dronecan_req);
+
+		} else {
+			// No RID module connected — fail explicitly
+			secure_command_reply_s reply{};
+			reply.timestamp = hrt_absolute_time();
+			reply.sequence  = req.sequence;
+			reply.operation = req.operation;
+			reply.result    = 4; // MAV_RESULT_FAILED
+			_secure_command_reply_pub.publish(reply);
 		}
-
-		_uavcan_secure_command_client.call(uavcan::NodeID(_rid_node_id), dronecan_req);
 	}
 }
 
@@ -437,14 +455,62 @@ void UavcanRemoteIDController::send_operator_id()
 void
 UavcanRemoteIDController::arm_status_sub_cb(const uavcan::ReceivedDataStructure<dronecan::remoteid::ArmStatus> &msg)
 {
-	open_drone_id_arm_status_s arm_status{};
+	_rid_node_id = msg.getSrcNodeID().get();
 
+	open_drone_id_arm_status_s arm_status{};
 	arm_status.timestamp = hrt_absolute_time();
 	arm_status.status = msg.status;
 	memcpy(arm_status.error, msg.error.c_str(), sizeof(arm_status.error));
-
 	_open_drone_id_arm_status_pub.publish(arm_status);
 }
+
+#ifdef PX4_CRYPTO
+void UavcanRemoteIDController::handle_secure_command_local(const secure_command_request_s &req)
+{
+	secure_command_reply_s reply{};
+	reply.timestamp = hrt_absolute_time();
+	reply.sequence  = req.sequence;
+	reply.operation = req.operation;
+	reply.result    = 4; // MAV_RESULT_FAILED
+
+	// Get operator Ed25519 public key from keystore (index 0)
+	keystore_session_handle_t ks = keystore_open();
+	uint8_t ed25519_pub[32]{};
+	size_t  got = keystore_get_key(ks, 0, ed25519_pub, sizeof(ed25519_pub));
+	keystore_close(&ks);
+
+	if (got != 32) {
+		_secure_command_reply_pub.publish(reply);
+		return;
+	}
+
+	// Convert operator Ed25519 pubkey → X25519
+	uint8_t operator_x25519[32];
+	crypto_from_ed25519_public(operator_x25519, ed25519_pub);
+
+	// Generate ephemeral X25519 keypair
+	uint8_t eph_priv[32], eph_pub[32];
+	if (px4_get_secure_random(eph_priv, 32) == 32) {
+		crypto_x25519_public_key(eph_pub, eph_priv);
+
+		// Derive session key
+		uint8_t shared[32];
+		crypto_x25519(shared, eph_priv, operator_x25519);
+		crypto_blake2b_general(_session_key, 32, nullptr, 0, shared, 32);
+		_session_valid = true;
+
+		crypto_wipe(shared,   sizeof(shared));
+		crypto_wipe(eph_priv, sizeof(eph_priv));
+
+		memcpy(reply.data, eph_pub, 32);
+		reply.data_length = 32;
+		reply.result = 0; // MAV_RESULT_ACCEPTED
+	}
+
+	crypto_wipe(operator_x25519, sizeof(operator_x25519));
+	_secure_command_reply_pub.publish(reply);
+}
+#endif
 
 void
 UavcanRemoteIDController::secure_command_server_cb(
@@ -548,18 +614,6 @@ UavcanRemoteIDController::secure_command_server_cb(
 	default:
 		break;
 	}
-}
-
-void UavcanRemoteIDController::aurelia_status_sub_cb(
-	const uavcan::ReceivedDataStructure<dronecan::aurelia::remoteid::Status> &msg)
-{
-	_rid_node_id = msg.getSrcNodeID().get();
-
-	aurelia_odid_status_s status{};
-	status.timestamp = hrt_absolute_time();
-	status.status    = msg.status;
-	memcpy(status.error, msg.error.c_str(), sizeof(status.error));
-	_aurelia_odid_status_pub.publish(status);
 }
 
 void UavcanRemoteIDController::secure_command_client_cb(

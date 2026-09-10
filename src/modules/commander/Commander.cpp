@@ -2880,6 +2880,19 @@ void Commander::dataLinkCheck()
 		_status_changed = true;
 	}
 
+	// DroneCAN path: arm_status published by remoteid.cpp bridges CAN module presence
+	{
+		open_drone_id_arm_status_s arm_status{};
+
+		if (_open_drone_id_arm_status_sub.copy(&arm_status)
+		    && hrt_elapsed_time(&arm_status.timestamp) < 3_s) {
+			_datalink_last_heartbeat_open_drone_id_system = arm_status.timestamp;
+			_vehicle_status.open_drone_id_system_present = true;
+			_vehicle_status.open_drone_id_system_healthy = (arm_status.status == open_drone_id_arm_status_s::ODID_ARM_STATUS_GOOD_TO_ARM);
+			_open_drone_id_system_lost = false;
+		}
+	}
+
 	// Remote ID system
 	if ((hrt_elapsed_time(&_datalink_last_heartbeat_open_drone_id_system) > 3_s)
 	    && !_open_drone_id_system_lost) {

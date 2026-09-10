@@ -50,6 +50,7 @@ GTAGS
 # CLion ignores
 .idea
 cmake-build-*/
+keys/
 
 posix-configs/SITL/init/test/*_generated
 

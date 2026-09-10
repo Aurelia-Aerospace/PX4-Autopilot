@@ -66,7 +66,6 @@ set(msg_files
 	DifferentialPressure.msg
 	DistanceSensor.msg
 	DistanceSensorModeChangeRequest.msg
-	AureliaOdidStatus.msg
 	DronecanNodeStatus.msg
 	Ekf2Timestamps.msg
 	EscReport.msg

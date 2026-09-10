@@ -154,3 +154,17 @@ PARAM_DEFINE_INT32(MAV_HB_FORW_EN, 1);
  * @max 250
  */
 PARAM_DEFINE_INT32(MAV_RADIO_TOUT, 5);
+
+/**
+ * Firmware lock flag (set at manufacturing via SecureCommand)
+ * @group System
+ * @min 0
+ * @max 1
+ */
+PARAM_DEFINE_INT32(FW_LOCK, 0);
+
+/**
+ * Board serial number (set at manufacturing via SecureCommand)
+ * @group System
+ */
+PARAM_DEFINE_INT32(FW_SN, 0);

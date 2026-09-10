@@ -72,6 +72,7 @@
 #include <uORB/topics/manual_control_setpoint.h>
 #include <uORB/topics/mission_result.h>
 #include <uORB/topics/offboard_control_mode.h>
+#include <uORB/topics/open_drone_id_arm_status.h>
 #include <uORB/topics/parameter_update.h>
 #include <uORB/topics/power_button_state.h>
 #include <uORB/topics/rtl_time_estimate.h>
@@ -302,6 +303,7 @@ private:
 	uORB::SubscriptionInterval				_parameter_update_sub{ORB_ID(parameter_update), 1_s};
 
 	uORB::SubscriptionMultiArray<telemetry_status_s>	_telemetry_status_subs{ORB_ID::telemetry_status};
+	uORB::Subscription					_open_drone_id_arm_status_sub{ORB_ID(open_drone_id_arm_status)};
 
 #if defined(BOARD_HAS_POWER_CONTROL)
 	uORB::Subscription					_power_button_state_sub {ORB_ID(power_button_state)};

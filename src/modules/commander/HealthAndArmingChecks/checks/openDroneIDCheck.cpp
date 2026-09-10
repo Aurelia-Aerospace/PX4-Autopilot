@@ -89,12 +89,11 @@ void OpenDroneIDChecks::checkAndReport(const Context &context, Report &reporter)
 	bool flying_not_allowed = false;
 
 	if (_param_com_odid_fs_act.get() > 0) {
-		aurelia_odid_status_s aurelia_status{};
+		open_drone_id_arm_status_s arm_status{};
 
-		if (_aurelia_odid_status_sub.copy(&aurelia_status)
-		    && hrt_elapsed_time(&aurelia_status.timestamp) < 5_s) {
-			// MAV_AURELIA_CHECK_STATUS_FAIL_FLYING_NOT_ALLOWED == 3
-			flying_not_allowed = (aurelia_status.status == 3);
+		if (_open_drone_id_arm_status_sub.copy(&arm_status)
+		    && hrt_elapsed_time(&arm_status.timestamp) < 5_s) {
+			flying_not_allowed = (arm_status.status == open_drone_id_arm_status_s::ODID_ARM_STATUS_FAIL_FLYING_NOT_ALLOWED);
 		}
 	}
 

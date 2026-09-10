@@ -35,7 +35,7 @@
 
 #include "../Common.hpp"
 #include <uORB/Subscription.hpp>
-#include <uORB/topics/aurelia_odid_status.h>
+#include <uORB/topics/open_drone_id_arm_status.h>
 
 class OpenDroneIDChecks : public HealthAndArmingCheckBase
 {
@@ -51,5 +51,5 @@ private:
 					(ParamInt<px4::params::COM_ODID_FS_ACT>) _param_com_odid_fs_act
 				       )
 
-	uORB::Subscription _aurelia_odid_status_sub{ORB_ID(aurelia_odid_status)};
+	uORB::Subscription _open_drone_id_arm_status_sub{ORB_ID(open_drone_id_arm_status)};
 };

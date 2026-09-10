@@ -47,9 +47,6 @@
 #include "mavlink_main.h"
 #include <lib/systemlib/mavlink_log.h>
 
-PARAM_DEFINE_INT32(FW_LOCK, 0);
-PARAM_DEFINE_INT32(FW_SN, 0);
-
 // ponytail: hardcoded list — add runtime config if boards diverge
 static const char *const _fw_locked_params[] = {
 	"FW_LOCK", "FW_SN", "COM_ARM_ODID", "UAVCAN_ENABLE", nullptr
