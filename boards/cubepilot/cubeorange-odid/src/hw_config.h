@@ -133,3 +133,11 @@
 #ifndef BOOT_DEVICES_FILTER_ONUSB
 #  define BOOT_DEVICES_FILTER_ONUSB USB0_DEV|SERIAL0_DEV|SERIAL1_DEV
 #endif
+
+/* Secure boot */
+#define BOOTLOADER_USE_SECURITY         1
+#define BOOTLOADER_SIGNING_ALGORITHM    1   /* CRYPTO_ED25519 */
+
+/* RDCT cert lives in the last 512 bytes of bootloader sector 0 (blank from factory).
+ * STM32H7 allows writing to erased cells without a sector erase. */
+#define RDCT_CERT_ADDRESS               0x0801FE00U

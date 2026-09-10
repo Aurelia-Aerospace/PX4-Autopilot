@@ -160,43 +160,68 @@ In the main boot flow, before calling `verify_app()`:
 
 ### Phase 4 — Firmware: RDCT write via SecureCommand
 
-The running firmware must be able to write an RDCT cert in response to a `SECURE_COMMAND` from the GCS.
+The running firmware writes an RDCT cert in response to a `SECURE_COMMAND` from the GCS.
+This is a **local FC command** — handled in `handle_secure_command_local()`, same as SET_PARAM.
+The RID module is not involved; no DroneCAN op or DSDL change needed.
 
-**File:** `src/drivers/uavcan/remoteid.cpp`
+**MAVLink op:** 10 = `WRITE_RDCT`
 
-Add a new case to the SecureCommand server callback:
+Add to `is_local_cmd` in `periodic_update()`:
+```cpp
+req.operation == MAV_OP_WRITE_RDCT
+```
 
-```c
-case SECURE_COMMAND_WRITE_RDCT: {
-    /* Payload: raw image_cert_t bytes */
-    if (req.data.size() != sizeof(image_cert_t)) {
-        reply.result = dronecan::remoteid::SecureCommand::Response::RESULT_FAILED;
-        break;
+Add handler branch in `handle_secure_command_local()`:
+
+```cpp
+static constexpr uint32_t MAV_OP_WRITE_RDCT = 10;
+if (req.operation == MAV_OP_WRITE_RDCT) {
+    // Data layout: [MAC: 16 bytes] [image_cert_t: N bytes]
+    // MAC = BLAKE2b-16(key=session_key, msg="write_rdct" || cert_bytes)
+    if (!_session_valid || req.data_length < 16 + sizeof(image_cert_t)) {
+        reply.result = 2; // MAV_RESULT_DENIED
+        _secure_command_reply_pub.publish(reply);
+        return;
     }
 
-    /* Write to RDCT_CERT_ADDRESS — area must be blank (0xFF) */
+    const uint8_t *cert_bytes = req.data + 16;
+    size_t         cert_len   = sizeof(image_cert_t);
+
+    // Verify MAC
+    static constexpr char label[] = "write_rdct";
+    // ponytail: VLA avoided — stack-allocate max expected size
+    uint8_t mac_input[sizeof(label) - 1 + sizeof(image_cert_t)];
+    memcpy(mac_input,                    label,      sizeof(label) - 1);
+    memcpy(mac_input + sizeof(label) - 1, cert_bytes, cert_len);
+
+    uint8_t expected_mac[16];
+    crypto_blake2b_general(expected_mac, 16, _session_key, 32,
+                            mac_input, sizeof(label) - 1 + cert_len);
+
+    if (memcmp(expected_mac, req.data, 16) != 0) {
+        reply.result = 2; // MAV_RESULT_DENIED
+        _secure_command_reply_pub.publish(reply);
+        return;
+    }
+
+    // Write cert to blank area in bootloader sector
     extern ssize_t up_progmem_write(size_t addr, const void *buf, size_t count);
-    ssize_t written = up_progmem_write(RDCT_CERT_ADDRESS,
-                                        req.data.data(),
-                                        sizeof(image_cert_t));
-    if (written != sizeof(image_cert_t)) {
-        reply.result = dronecan::remoteid::SecureCommand::Response::RESULT_FAILED;
-    } else {
-        reply.result = dronecan::remoteid::SecureCommand::Response::RESULT_ACCEPTED;
-    }
-    break;
+    ssize_t written = up_progmem_write(RDCT_CERT_ADDRESS, cert_bytes, cert_len);
+    reply.result = (written == (ssize_t)cert_len) ? 0 : 4;
+    _secure_command_reply_pub.publish(reply);
+    return;
 }
 ```
 
-`RDCT_CERT_ADDRESS` must be defined for the firmware too — add it to `boards/cubepilot/cubeorange-odid/src/hw_config.h` (same value as bootloader).
+`RDCT_CERT_ADDRESS` must also be defined in the firmware:
 
-Also add a new opcode to the DSDL:
+**File:** `boards/cubepilot/cubeorange-odid/src/hw_config.h` (and `cubeorangeplus-odid`)
 
-**File:** `src/drivers/uavcan/libdronecan/dsdl/dronecan/remoteid/64.SecureCommand.uavcan`
-
+```c
+#define RDCT_CERT_ADDRESS  0x0801FE00
 ```
-uint32 SECURE_COMMAND_WRITE_RDCT = 10
-```
+
+No DSDL change needed — this op never goes over DroneCAN.
 
 ---
 
@@ -226,28 +251,53 @@ Note: STM32H7 flash cannot be changed from 0→1 without a sector erase. Writing
 
 ### Phase 6 — bl_update bootloader flashing
 
-With secure boot active, **the bootloader itself can still be updated** via `bl_update` from within PX4. The new bootloader binary is embedded in ROMFS or fetched from SD card.
+With secure boot active, **the bootloader itself can still be updated** via `bl_update` from within PX4.
 
-To trigger a bootloader update remotely:
+`SECURE_COMMAND_OTA_CHUNK` (MAVLink op 12) is already routed to the RID module — reusing it for FC bootloader updates would create a routing conflict. Instead, the operator places the new `bootloader.bin` on the SD card and triggers the update via a dedicated SecureCommand.
 
-1. GCS sends `SECURE_COMMAND_OTA_CHUNK` with the new bootloader binary (already defined in DSDL)
-2. Firmware reassembles chunks, writes to a temp location (SD or spare flash)
-3. Firmware calls `bl_update <path>` via `px4_system_exec()` or directly calls `bl_update_main()`
-4. Reboot
+**MAVLink op:** 11 = `TRIGGER_BL_UPDATE` (local FC command)
 
-This is already partially implemented in `remoteid.cpp` via `SECURE_COMMAND_OTA_CHUNK` handling. The missing piece is the final `bl_update` call.
+Flow:
+1. Operator copies signed `bootloader.bin` to `/fs/microsd/bootloader.bin`
+2. GCS sends `SECURE_COMMAND` op 11 with MAC: `BLAKE2b-16(session_key, "bl_update")`
+3. PX4 verifies MAC (requires valid session), then calls `bl_update_main()`
+4. Board reboots with new bootloader
 
-**File:** `src/drivers/uavcan/remoteid.cpp`
+Add to `is_local_cmd` check and handle in `handle_secure_command_local()`:
 
-After receiving all OTA chunks and verifying the new bootloader:
+```cpp
+static constexpr uint32_t MAV_OP_TRIGGER_BL_UPDATE = 11;
+if (req.operation == MAV_OP_TRIGGER_BL_UPDATE) {
+    if (!_session_valid || req.data_length < 16) {
+        reply.result = 2; // MAV_RESULT_DENIED
+        _secure_command_reply_pub.publish(reply);
+        return;
+    }
 
-```c
-/* Verify new bootloader Ed25519 signature before flashing */
-/* Flash via bl_update mechanism */
-px4_task_spawn_cmd("bl_update", SCHED_DEFAULT, SCHED_PRIORITY_DEFAULT,
-                   2048, bl_update_main, (char *const[]){(char*)"bl_update",
-                   (char*)"/fs/microsd/bootloader.bin", nullptr});
+    uint8_t expected_mac[16];
+    static constexpr uint8_t label[] = "bl_update";
+    crypto_blake2b_general(expected_mac, 16, _session_key, 32,
+                            label, sizeof(label) - 1);
+
+    if (memcmp(expected_mac, req.data, 16) != 0) {
+        reply.result = 2; // MAV_RESULT_DENIED
+        _secure_command_reply_pub.publish(reply);
+        return;
+    }
+
+    reply.result = 0;
+    _secure_command_reply_pub.publish(reply);
+
+    // ponytail: bl_update verifies stack/entry constraints before flashing
+    px4_task_spawn_cmd("bl_update", SCHED_DEFAULT, SCHED_PRIORITY_DEFAULT,
+                       2048, bl_update_main,
+                       (char *const[]){(char*)"bl_update",
+                                       (char*)"/fs/microsd/bootloader.bin",
+                                       nullptr});
+}
 ```
+
+The operator is responsible for placing a valid (Ed25519-signed) bootloader binary on the SD card. `bl_update` itself validates stack pointer and entry point ranges before flashing.
 
 ---
 
@@ -260,8 +310,7 @@ px4_task_spawn_cmd("bl_update", SCHED_DEFAULT, SCHED_PRIORITY_DEFAULT,
 | `boards/cubepilot/cubeorange-odid/src/hw_config.h` | Add `BOOTLOADER_USE_SECURITY`, `BOOTLOADER_SIGNING_ALGORITHM`, `RDCT_CERT_ADDRESS` |
 | `boards/cubepilot/cubeorangeplus-odid/src/hw_config.h` | Same |
 | `platforms/nuttx/src/bootloader/common/bl.c` | Add `check_rdct_allows_unsigned()`, wire into boot flow |
-| `src/drivers/uavcan/remoteid.cpp` | Add `SECURE_COMMAND_WRITE_RDCT` case, RDCT erasure on startup |
-| `src/drivers/uavcan/libdronecan/dsdl/dronecan/remoteid/64.SecureCommand.uavcan` | Add `SECURE_COMMAND_WRITE_RDCT = 10` |
+| `src/drivers/uavcan/remoteid.cpp` | Add local handlers for op 10 (WRITE_RDCT) and op 11 (TRIGGER_BL_UPDATE), RDCT erasure on startup |
 
 ---
 
@@ -292,10 +341,15 @@ App boots
     │
     └─ Normal operation
            │
-           └─ SecureCommand WRITE_RDCT received?
-                   → verify cert with key[1] (GCS-side)
-                   → up_progmem_write() to 0x0801FE00
-                   → reply ACCEPTED → operator reboots board
+           ├─ SecureCommand op 10 (WRITE_RDCT) received?
+           │       → verify session + BLAKE2b MAC
+           │       → up_progmem_write() to 0x0801FE00
+           │       → reply ACCEPTED → operator reboots board
+           │
+           └─ SecureCommand op 11 (TRIGGER_BL_UPDATE) received?
+                   → verify session + BLAKE2b MAC
+                   → bl_update /fs/microsd/bootloader.bin
+                   → reboot
 ```
 
 ---

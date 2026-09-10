@@ -1,3 +1,5 @@
 CONFIG_BOARD_TOOLCHAIN="arm-none-eabi"
 CONFIG_BOARD_ARCHITECTURE="cortex-m7"
 CONFIG_BOARD_ROMFSROOT=""
+CONFIG_PUBLIC_KEY0="../../../keys/operator_key.pub"
+CONFIG_PUBLIC_KEY1="../../../keys/recovery_key.pub"

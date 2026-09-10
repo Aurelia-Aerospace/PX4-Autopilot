@@ -37,14 +37,21 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <px4_platform_common/tasks.h>
+
 #ifdef PX4_CRYPTO
 #include <optional/monocypher-ed25519.h>
 #include <px4_random.h>
 #include <keystore_backend_definitions.h>
+#include <lib/parameters/param_security.hpp>
+#include <image_toc.h>
+#include <stddef.h>
+#include <nuttx/progmem.h>
 extern "C" {
 keystore_session_handle_t keystore_open(void);
 void                      keystore_close(keystore_session_handle_t *handle);
 size_t                    keystore_get_key(keystore_session_handle_t handle, uint8_t idx, uint8_t *key_buf, size_t key_buf_size);
+int                       bl_update_main(int argc, char *argv[]);
 }
 #endif
 
@@ -135,6 +142,18 @@ int UavcanRemoteIDController::init()
 	_uavcan_secure_command_client.setCallback(
 		SecureCommandClientBinder(this, &UavcanRemoteIDController::secure_command_client_cb));
 
+#if defined(PX4_CRYPTO) && defined(RDCT_CERT_ADDRESS)
+	/* Invalidate any RDCT cert left from a recovery boot — it's single-use.
+	 * Writing 0x00 over the signature field forces all bits to 0 (valid on STM32H7
+	 * without a sector erase since we only go 1→0). */
+	const uint8_t *rdct = (const uint8_t *)RDCT_CERT_ADDRESS;
+	if (rdct[0] != 0xFF) {
+		static const uint8_t zeros[64] = {};
+		size_t sig_offset = offsetof(image_cert_t, signature);
+		up_progmem_write(RDCT_CERT_ADDRESS + sig_offset, zeros, sizeof(zeros));
+	}
+#endif
+
 	return 0;
 }
 
@@ -152,21 +171,51 @@ void UavcanRemoteIDController::periodic_update(const uavcan::TimerEvent &)
 		secure_command_request_s req{};
 		_secure_command_request_sub.copy(&req);
 
-		const bool is_session_cmd =
-			req.operation == dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GET_SESSION_KEY ||
-			req.operation == dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GET_REMOTEID_SESSION_KEY;
+		// MAVLink op numbering (ArduPilot-aligned):
+		//   0,1 = session key (local)
+		//   8   = SET_PARAM        (local, PX4_CRYPTO only)
+		//   9   = GENERATE_RID_KEY → DroneCAN op 8
+		//   10  = WRITE_RDCT       (local, PX4_CRYPTO only)
+		//   11  = TRIGGER_BL_UPDATE(local, PX4_CRYPTO only)
+		//   12  = OTA_CHUNK        → DroneCAN op 9
+		//   others → forward as-is
+		static constexpr uint32_t MAV_OP_SET_PARAM          = 8;
+		static constexpr uint32_t MAV_OP_GENERATE_RID_KEY   = 9;
+		static constexpr uint32_t MAV_OP_WRITE_RDCT         = 10;
+		static constexpr uint32_t MAV_OP_TRIGGER_BL_UPDATE  = 11;
+		static constexpr uint32_t MAV_OP_OTA_CHUNK          = 12;
 
-		if (is_session_cmd) {
-			// Session key is always handled locally — needed before forwarding any other command
+		const bool is_local_cmd =
+			req.operation == dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GET_SESSION_KEY ||
+			req.operation == dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GET_REMOTEID_SESSION_KEY ||
+			req.operation == MAV_OP_SET_PARAM ||
+			req.operation == MAV_OP_WRITE_RDCT ||
+			req.operation == MAV_OP_TRIGGER_BL_UPDATE;
+
+		if (is_local_cmd) {
 #ifdef PX4_CRYPTO
 			handle_secure_command_local(req);
+#else
+			secure_command_reply_s reply{};
+			reply.timestamp = hrt_absolute_time();
+			reply.sequence  = req.sequence;
+			reply.operation = req.operation;
+			reply.result    = 3; // MAV_RESULT_UNSUPPORTED
+			_secure_command_reply_pub.publish(reply);
 #endif
 
 		} else if (_rid_node_id != 0) {
-			// All other commands go to the external DroneCAN RID module
+			// Translate MAVLink op → DroneCAN op where numbering differs
+			uint32_t dronecan_op = req.operation;
+			if (req.operation == MAV_OP_GENERATE_RID_KEY) {
+				dronecan_op = dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GENERATE_RID_KEY; // 8
+			} else if (req.operation == MAV_OP_OTA_CHUNK) {
+				dronecan_op = dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_OTA_CHUNK; // 9
+			}
+
 			dronecan::remoteid::SecureCommand::Request dronecan_req{};
 			dronecan_req.sequence   = req.sequence;
-			dronecan_req.operation  = req.operation;
+			dronecan_req.operation  = dronecan_op;
 			dronecan_req.sig_length = req.sig_length;
 
 			for (uint8_t i = 0; i < req.data_length && i < sizeof(req.data); ++i) {
@@ -176,12 +225,11 @@ void UavcanRemoteIDController::periodic_update(const uavcan::TimerEvent &)
 			_uavcan_secure_command_client.call(uavcan::NodeID(_rid_node_id), dronecan_req);
 
 		} else {
-			// No RID module connected — fail explicitly
 			secure_command_reply_s reply{};
 			reply.timestamp = hrt_absolute_time();
 			reply.sequence  = req.sequence;
 			reply.operation = req.operation;
-			reply.result    = 4; // MAV_RESULT_FAILED
+			reply.result    = 4; // MAV_RESULT_FAILED — no module
 			_secure_command_reply_pub.publish(reply);
 		}
 	}
@@ -473,7 +521,130 @@ void UavcanRemoteIDController::handle_secure_command_local(const secure_command_
 	reply.operation = req.operation;
 	reply.result    = 4; // MAV_RESULT_FAILED
 
-	// Get operator Ed25519 public key from keystore (index 0)
+	static constexpr uint32_t MAV_OP_SET_PARAM = 8; // MAVLink op 8 (ArduPilot-aligned)
+	if (req.operation == MAV_OP_SET_PARAM) {
+		// Data layout: [name: char[16]] [value: uint8[4]] [MAC: uint8[16]]
+		if (!_session_valid || req.data_length < 36) {
+			reply.result = 2; // MAV_RESULT_DENIED
+			_secure_command_reply_pub.publish(reply);
+			return;
+		}
+
+		char name[17]{};
+		memcpy(name, req.data, 16);
+
+		uint8_t value_bytes[4];
+		memcpy(value_bytes, req.data + 16, 4);
+
+		// Verify BLAKE2b-16 MAC: BLAKE2b(key=session_key, msg="set_param" || name[16] || value[4])
+		static constexpr char label[] = "set_param";
+		uint8_t msg[sizeof(label) - 1 + 16 + 4];
+		memcpy(msg,                         label,       sizeof(label) - 1);
+		memcpy(msg + sizeof(label) - 1,     req.data,    16);
+		memcpy(msg + sizeof(label) - 1 + 16, value_bytes, 4);
+
+		uint8_t expected_mac[16];
+		crypto_blake2b_general(expected_mac, 16, _session_key, 32, msg, sizeof(msg));
+
+		if (memcmp(expected_mac, req.data + 20, 16) != 0) {
+			reply.result = 2; // MAV_RESULT_DENIED
+			_secure_command_reply_pub.publish(reply);
+			return;
+		}
+
+		if (!fw_param_is_secure(name)) {
+			reply.result = 3; // MAV_RESULT_UNSUPPORTED
+			_secure_command_reply_pub.publish(reply);
+			return;
+		}
+
+		param_t p = param_find(name);
+		if (p == PARAM_INVALID) {
+			_secure_command_reply_pub.publish(reply);
+			return;
+		}
+
+		int32_t int_val;
+		memcpy(&int_val, value_bytes, 4);
+		if (param_set(p, &int_val) == 0) {
+			param_save_default(false);
+			reply.result = 0; // MAV_RESULT_ACCEPTED
+		}
+
+		_secure_command_reply_pub.publish(reply);
+		return;
+	}
+
+#ifdef RDCT_CERT_ADDRESS
+	static constexpr uint32_t MAV_OP_WRITE_RDCT        = 10;
+	static constexpr uint32_t MAV_OP_TRIGGER_BL_UPDATE = 11;
+
+	if (req.operation == MAV_OP_WRITE_RDCT) {
+		// Data layout: [MAC: 16 bytes] [image_cert_t: N bytes]
+		// MAC = BLAKE2b-16(key=session_key, msg="write_rdct" || cert_bytes)
+		size_t cert_len = sizeof(image_cert_t) + 64; // struct + Ed25519 signature
+		if (!_session_valid || req.data_length < 16 + cert_len) {
+			reply.result = 2; // MAV_RESULT_DENIED
+			_secure_command_reply_pub.publish(reply);
+			return;
+		}
+
+		const uint8_t *cert_bytes = req.data + 16;
+
+		static constexpr char label[] = "write_rdct";
+		uint8_t mac_input[sizeof(label) - 1 + sizeof(image_cert_t) + 64];
+		memcpy(mac_input,                    label,      sizeof(label) - 1);
+		memcpy(mac_input + sizeof(label) - 1, cert_bytes, cert_len);
+
+		uint8_t expected_mac[16];
+		crypto_blake2b_general(expected_mac, 16, _session_key, 32,
+				       mac_input, sizeof(label) - 1 + cert_len);
+
+		if (memcmp(expected_mac, req.data, 16) != 0) {
+			reply.result = 2; // MAV_RESULT_DENIED
+			_secure_command_reply_pub.publish(reply);
+			return;
+		}
+
+		ssize_t written = up_progmem_write(RDCT_CERT_ADDRESS, cert_bytes, cert_len);
+		reply.result = (written == (ssize_t)cert_len) ? 0 : 4;
+		_secure_command_reply_pub.publish(reply);
+		return;
+	}
+
+	if (req.operation == MAV_OP_TRIGGER_BL_UPDATE) {
+		// Data layout: [MAC: 16 bytes]
+		// MAC = BLAKE2b-16(key=session_key, msg="bl_update")
+		if (!_session_valid || req.data_length < 16) {
+			reply.result = 2; // MAV_RESULT_DENIED
+			_secure_command_reply_pub.publish(reply);
+			return;
+		}
+
+		static constexpr uint8_t bl_label[] = "bl_update";
+		uint8_t expected_mac[16];
+		crypto_blake2b_general(expected_mac, 16, _session_key, 32,
+				       bl_label, sizeof(bl_label) - 1);
+
+		if (memcmp(expected_mac, req.data, 16) != 0) {
+			reply.result = 2; // MAV_RESULT_DENIED
+			_secure_command_reply_pub.publish(reply);
+			return;
+		}
+
+		reply.result = 0; // MAV_RESULT_ACCEPTED
+		_secure_command_reply_pub.publish(reply);
+
+		// ponytail: bl_update validates stack/entry ranges before flashing
+		static char path[] = "/fs/microsd/bootloader.bin";
+		char *argv_bl[] = {(char *)"bl_update", path, nullptr};
+		px4_task_spawn_cmd("bl_update", SCHED_DEFAULT, SCHED_PRIORITY_DEFAULT,
+				   2048, bl_update_main, argv_bl);
+		return;
+	}
+#endif // RDCT_CERT_ADDRESS
+
+	// Session key operations (op 0 and 1 — GET_SESSION_KEY / GET_REMOTEID_SESSION_KEY)
 	keystore_session_handle_t ks = keystore_open();
 	uint8_t ed25519_pub[32]{};
 	size_t  got = keystore_get_key(ks, 0, ed25519_pub, sizeof(ed25519_pub));
@@ -484,16 +655,13 @@ void UavcanRemoteIDController::handle_secure_command_local(const secure_command_
 		return;
 	}
 
-	// Convert operator Ed25519 pubkey → X25519
 	uint8_t operator_x25519[32];
 	crypto_from_ed25519_public(operator_x25519, ed25519_pub);
 
-	// Generate ephemeral X25519 keypair
 	uint8_t eph_priv[32], eph_pub[32];
 	if (px4_get_secure_random(eph_priv, 32) == 32) {
 		crypto_x25519_public_key(eph_pub, eph_priv);
 
-		// Derive session key
 		uint8_t shared[32];
 		crypto_x25519(shared, eph_priv, operator_x25519);
 		crypto_blake2b_general(_session_key, 32, nullptr, 0, shared, 32);

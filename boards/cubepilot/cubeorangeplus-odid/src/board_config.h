@@ -200,5 +200,9 @@ extern void stm32_spiinitialize(void);
 extern void board_peripheral_reset(int ms);
 
 #include <px4_platform_common/board_common.h>
+
+/* RDCT recovery cert address — last 512 B of bootloader sector 0 (shared with bootloader/hw_config.h) */
+#define RDCT_CERT_ADDRESS  0x0801FE00U
+
 #endif /* __ASSEMBLY__ */
 __END_DECLS

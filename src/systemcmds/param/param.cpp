@@ -58,6 +58,7 @@
 #include <sys/stat.h>
 
 #include <parameters/param.h>
+#include <lib/parameters/param_security.hpp>
 #include "systemlib/err.h"
 
 __BEGIN_DECLS
@@ -775,6 +776,11 @@ do_set(const char *name, const char *val, bool fail_on_not_found)
 	/*
 	 * Set parameter if type is known and conversion from string to value turns out fine
 	 */
+
+	if (fw_param_is_secure(param_name(param)) || fw_param_is_locked(param_name(param))) {
+		PX4_ERR("param %s is protected, use SecureCommand", param_name(param));
+		return 1;
+	}
 
 	switch (param_type(param)) {
 	case PARAM_TYPE_INT32:

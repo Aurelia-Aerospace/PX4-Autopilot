@@ -55,6 +55,27 @@
 #include <px4_platform_common/crypto_backend.h>
 #endif
 
+#if defined(BOOTLOADER_USE_SECURITY) && defined(RDCT_CERT_ADDRESS)
+static bool check_rdct_allows_unsigned(void)
+{
+	const image_cert_t *cert = (const image_cert_t *)RDCT_CERT_ADDRESS;
+
+	/* All-0xFF means no cert written yet */
+	if (cert->device_uuid[0] == 0xFF) {
+		return false;
+	}
+
+	/* Verify cert signature with key[1] (recovery key) */
+	size_t data_len = offsetof(image_cert_t, signature);
+	const uint8_t *sig = (const uint8_t *)cert + data_len;
+	crypto_session_handle_t handle = crypto_open(BOOTLOADER_SIGNING_ALGORITHM);
+	bool ok = crypto_signature_check(handle, 1, sig, (const uint8_t *)cert, data_len);
+	crypto_close(&handle);
+
+	return ok && (cert->caps[0] & RDCT_CAPS0_ALLOW_UNSIGNED_BOOT);
+}
+#endif
+
 // bootloader flash update protocol.
 //
 // Command format:
@@ -336,16 +357,24 @@ jump_to_app()
 		return;
 	}
 
-	/* Verify the first entry, containing the TOC itself */
-	if (!verify_app(0, toc_entries)) {
-		/* Image verification failed, stay in btl */
+	/* Check RDCT cert before signature enforcement */
+#if defined(BOOTLOADER_USE_SECURITY) && defined(RDCT_CERT_ADDRESS)
+	bool rdct_unsigned_ok = check_rdct_allows_unsigned();
+#else
+	bool rdct_unsigned_ok = false;
+#endif
+
+	/* Verify the first entry (TOC itself) unless RDCT allows unsigned boot */
+	if (!rdct_unsigned_ok && !verify_app(0, toc_entries)) {
+		/* Image verification failed and no valid RDCT — stay in btl */
 		return;
 	}
 
-	/* TOC is verified, loop through all the apps and perform crypto ops */
+	/* TOC is verified (or RDCT override active), loop through all the apps */
 	for (i = 0; i < len; i++) {
 		/* Verify app, if needed. i == 0 is already verified */
 		if (i != 0 &&
+		    !rdct_unsigned_ok &&
 		    toc_entries[i].flags1 & TOC_FLAG1_CHECK_SIGNATURE &&
 		    !verify_app(i, toc_entries)) {
 			/* Signature check failed, don't process this app */
