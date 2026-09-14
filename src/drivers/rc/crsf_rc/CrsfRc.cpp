@@ -217,6 +217,14 @@ void CrsfRc::Run()
 			}
 		}
 
+		if (_param_rc_crsf_tel_en.get() && !_is_singlewire) {
+			mavlink_log_s mavlink_log;
+
+			if (_mavlink_log_sub.update(&mavlink_log)) {
+				this->SendTelemetryStatustext(mavlink_log.severity, mavlink_log.text);
+			}
+		}
+
 		if (_param_rc_crsf_tel_en.get() && !_is_singlewire
 		    && (_input_rc.timestamp > _telemetry_update_last + 100_ms)) {
 			switch (_next_type) {
@@ -477,6 +485,21 @@ bool CrsfRc::SendTelemetryFlightMode(const char *flight_mode)
 	offset += length;
 	buf[offset - 1] = 0; // ensure null-terminated string
 	WriteFrameCrc(buf, offset, length + 4);
+	return _uart->write((void *) buf, (size_t) offset);
+}
+
+bool CrsfRc::SendTelemetryStatustext(uint8_t severity, const char *text)
+{
+	const int max_text = 50;
+	int text_len = strnlen(text, max_text) + 1; // +1 null terminator
+	uint8_t buf[max_text + 7];                  // 3 header + 2 (sub+sev) + max_text+1 null + 1 CRC
+	int offset = 0;
+	WriteFrameHeader(buf, offset, crsf_frame_type_t::ap_custom_telem, text_len + 2);
+	write_uint8_t(buf, offset, 0xF1);     // sub-type: statustext
+	write_uint8_t(buf, offset, severity);
+	memcpy(buf + offset, text, text_len);
+	offset += text_len;
+	WriteFrameCrc(buf, offset, text_len + 6); // pattern: payload_size + 4 = (text_len+2) + 4
 	return _uart->write((void *) buf, (size_t) offset);
 }
 

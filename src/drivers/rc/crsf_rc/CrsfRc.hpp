@@ -53,6 +53,7 @@
 #include <uORB/topics/vehicle_attitude.h>
 #include <uORB/topics/sensor_gps.h>
 #include <uORB/topics/vehicle_status.h>
+#include <uORB/topics/mavlink_log.h>
 
 using namespace device;
 
@@ -90,6 +91,8 @@ private:
 
 	bool SendTelemetryFlightMode(const char *flight_mode);
 
+	bool SendTelemetryStatustext(uint8_t severity, const char *text);
+
 	Serial *_uart = nullptr; ///< UART interface to RC
 
 	char _device[20] {}; ///< device / serial port path
@@ -107,6 +110,7 @@ private:
 	hrt_abstime _telemetry_update_last{0};
 	static constexpr int num_data_types{4}; ///< number of different telemetry data types
 	int _next_type{0};
+	uORB::Subscription _mavlink_log_sub{ORB_ID(mavlink_log)};
 	uORB::Subscription _battery_status_sub{ORB_ID(battery_status)};
 	uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
 	uORB::Subscription _vehicle_gps_position_sub{ORB_ID(vehicle_gps_position)};
@@ -126,7 +130,10 @@ private:
 		parameter_settings_entry = 0x2B,
 		parameter_read = 0x2C,
 		parameter_write = 0x2D,
-		command = 0x32
+		command = 0x32,
+
+		// ArduPilot-compatible custom telemetry (statustext 0xF1)
+		ap_custom_telem = 0x80
 	};
 
 	enum class crsf_payload_size_t : uint8_t {
