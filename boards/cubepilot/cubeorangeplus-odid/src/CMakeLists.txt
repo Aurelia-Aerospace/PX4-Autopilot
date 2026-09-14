@@ -50,6 +50,7 @@ else()
 		led.c
 		spi.cpp
 		timer_config.cpp
+		toc.c
 		usb.c
 	)
 

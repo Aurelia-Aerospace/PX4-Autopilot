@@ -145,3 +145,63 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+#!/bin/bash
+  set -e
+
+  # 1. Compilar bootloader seguro
+  make cubepilot_cubeorange-odid_bootloader
+
+  # 2. Reemplazar el binario pre-compilado en extras con el tuyo
+  cp build/cubepilot_cubeorange-odid_bootloader/cubepilot_cubeorange-odid_bootloader
+  .bin \
+     boards/cubepilot/cubeorange-odid/extras/cubepilot_cubeorange_bootloader.bin
+
+  # 3. Compilar firmware (ahora embebe tu bootloader seguro en ROMFS)
+  make cubepilot_cubeorange-odid_default
+
+  # 4. Firmar firmware
+  python3 Tools/odid/sign_firmware.py \
+    --key keys/operator_key.json \
+    --input
+  build/cubepilot_cubeorange-odid_default/cubepilot_cubeorange-odid_default.bin \
+    --output firmware_signed.bin
+
+  # 5. Flashear firmware firmado (via QGC o uploader) ← aquí el usuario conecta el
+  FC
+  # ...
+
+  # 6. Desde firmware corriendo: promover bootloader seguro
+  python3 Tools/odid/trigger_bl_update.py --key keys/operator_key.json
+
+  Esto funciona porque:
+  - Paso 5 funciona con el bootloader ACTUAL (no seguro) — acepta cualquier firmware
+  - El firmware firmado ya embebe el bootloader seguro en ROMFS
+  - Paso 6 instala el bootloader seguro desde ROMFS y el board reinicia
+  - Después del reboot, el bootloader seguro verifica el firmware firmado → arranca
+
+  ---
+  Comparación de enfoques
+
+  Column 1: Herramienta extra
+  DFU una vez: Cable DFU / BOOT pin
+  Script sin DFU: Solo QGC
+  ────────────────────────────────────────
+  Column 1: Complejidad
+  DFU una vez: Una vez, luego olvidar
+  Script sin DFU: Cuidar el extras/ en git
+  ────────────────────────────────────────
+  Column 1: Riesgo
+  DFU una vez: Mínimo
+  Script sin DFU: Si commit del .bin viejo, pierdes trazabilidad
+  ────────────────────────────────────────
+  Column 1: Para updates futuros
+  DFU una vez: Solo firmar + flashear
+  Script sin DFU: Mismo script
+
+  Recomendación: usa DFU para el bootloader inicial una sola vez. Es el mecanismo
+  correcto — flashing del bootloader es una operación de bajo nivel. Después de ese
+  setup, todo lo demás (firmware updates) es sign + QGC, sin DFU nunca más.

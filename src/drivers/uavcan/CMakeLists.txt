@@ -203,5 +203,5 @@ px4_add_module(
 	)
 
 if(DEFINED PX4_CRYPTO)
-	target_link_libraries(drivers__uavcan PRIVATE monocypher px4_random systemcmds__bl_update)
+	target_link_libraries(drivers__uavcan PRIVATE monocypher px4_random)
 endif()

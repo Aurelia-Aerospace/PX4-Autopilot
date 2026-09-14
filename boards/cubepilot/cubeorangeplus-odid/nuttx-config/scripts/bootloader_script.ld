@@ -133,6 +133,7 @@ ENTRY(_stext)
  */
 EXTERN(abort)
 EXTERN(_bootdelay_signature)
+EXTERN(px4_get_secure_random)
 
 SECTIONS
 {

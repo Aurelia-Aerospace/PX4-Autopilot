@@ -35,6 +35,7 @@ add_library(bootloader
 	bl.c
 	image_toc.c
 	crypto.c
+	random_stub.c
 )
 
 target_compile_definitions(bootloader

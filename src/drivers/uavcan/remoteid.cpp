@@ -47,11 +47,35 @@
 #include <image_toc.h>
 #include <stddef.h>
 #include <nuttx/progmem.h>
+#include <sys/stat.h>
+#include <px4_platform_common/board_common.h>
 extern "C" {
 keystore_session_handle_t keystore_open(void);
 void                      keystore_close(keystore_session_handle_t *handle);
 size_t                    keystore_get_key(keystore_session_handle_t handle, uint8_t idx, uint8_t *key_buf, size_t key_buf_size);
-int                       bl_update_main(int argc, char *argv[]);
+
+static int bl_update_main(int argc, char *argv[])
+{
+	if (argc < 2) { return 1; }
+	struct stat s;
+	if (stat(argv[1], &s) != 0 || s.st_size > 128 * 1024) { return 1; }
+	const size_t page_sz = up_progmem_pagesize(0);
+	const size_t img_sz  = ((size_t)s.st_size + page_sz - 1) & ~(page_sz - 1);
+	uint8_t *buf = (uint8_t *)malloc(img_sz);
+	if (!buf) { return 1; }
+	memset(buf, 0xff, img_sz);
+	int fd = open(argv[1], O_RDONLY);
+	const bool ok = (fd >= 0) && (read(fd, buf, s.st_size) == (ssize_t)s.st_size);
+	if (fd >= 0) { close(fd); }
+	if (!ok) { free(buf); return 1; }
+	sched_lock();
+	up_progmem_eraseblock(0);
+	up_progmem_write(0x08000000, buf, img_sz);
+	sched_unlock();
+	free(buf);
+	board_reset(0);
+	return 0;
+}
 }
 #endif
 
@@ -635,9 +659,19 @@ void UavcanRemoteIDController::handle_secure_command_local(const secure_command_
 		reply.result = 0; // MAV_RESULT_ACCEPTED
 		_secure_command_reply_pub.publish(reply);
 
+		// ROMFS-embedded bootloader (already in firmware, no SD needed).
+		// Fall back to SD for a custom/updated bootloader.
 		// ponytail: bl_update validates stack/entry ranges before flashing
-		static char path[] = "/fs/microsd/bootloader.bin";
-		char *argv_bl[] = {(char *)"bl_update", path, nullptr};
+		static const char *const romfs_paths[] = {
+			"/etc/extras/cubepilot_cubeorange_bootloader.bin",
+			"/etc/extras/cubepilot_cubeorangeplus_bootloader.bin",
+			nullptr
+		};
+		const char *bl_path = "/fs/microsd/bootloader.bin";
+		for (auto p = romfs_paths; *p; ++p) {
+			if (access(*p, F_OK) == 0) { bl_path = *p; break; }
+		}
+		char *argv_bl[] = {(char *)"bl_update", (char *)bl_path, nullptr};
 		px4_task_spawn_cmd("bl_update", SCHED_DEFAULT, SCHED_PRIORITY_DEFAULT,
 				   2048, bl_update_main, argv_bl);
 		return;

@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Trigger a bootloader update on the FC via MAVLink SecureCommand (op 11).
 
-The new bootloader binary must already be at /fs/microsd/bootloader.bin on the board.
+The firmware tries paths in order:
+  1. /etc/extras/cubepilot_cubeorange_bootloader.bin   (ROMFS, always present)
+  2. /etc/extras/cubepilot_cubeorangeplus_bootloader.bin
+  3. /fs/microsd/bootloader.bin                        (SD fallback, custom bootloader)
+
+No SD card needed for a standard bootloader update.
 
 Usage:
   python3 trigger_bl_update.py --key operator_key.json

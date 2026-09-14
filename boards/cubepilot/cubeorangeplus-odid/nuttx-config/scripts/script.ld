@@ -132,6 +132,7 @@ ENTRY(_stext)
  */
 EXTERN(abort)
 EXTERN(_bootdelay_signature)
+EXTERN(_main_toc)
 
 SECTIONS
 {
@@ -145,6 +146,7 @@ SECTIONS
 		_bootdelay_signature = ABSOLUTE(.);
 		FILL(0xffecc2925d7d05c5)
 		. += 8;
+		*(.main_toc)
 		*(.text .text.*)
 		*(.fixup)
 		*(.gnu.warning)
@@ -211,6 +213,11 @@ SECTIONS
 		. = ALIGN(4);
 		_sram4_heap_start = ABSOLUTE(.);
 	} > SRAM4
+
+	/* Start of the firmware signature — must be the last section in FLASH */
+	.signature : {
+		_boot_signature = ALIGN(4);
+	} > FLASH
 
 	/* Stabs debugging sections. */
 	.stab 0 : { *(.stab) }
