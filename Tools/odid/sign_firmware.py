@@ -1,30 +1,27 @@
 #!/usr/bin/env python3
-"""Sign a PX4 firmware binary for secure boot.
-
-The build embeds a TOC (table of contents) in the .main_toc linker section,
-placed just after the bootdelay signature (right after the vector table).
-This script scans the first 4KB for the TOC magic, signs the full firmware
-with Ed25519, and appends the 64-byte signature.
+"""Sign a PX4 firmware for secure boot. Accepts .px4 or .bin input.
 
 Usage:
   python3 sign_firmware.py --key keys/operator_key.json \
-      --input build/cubepilot_cubeorange-odid_default/cubepilot_cubeorange-odid_default.bin \
-      --output firmware_signed.bin
+      --input build/cubepilot_cubeorange-odid_default/cubepilot_cubeorange-odid_default.px4 \
+      --output firmware_signed.px4
 
 Requires: pip install cryptography
 """
 import argparse
+import base64
 import json
 import struct
 import sys
+import zlib
 
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 except ImportError:
     sys.exit("pip install cryptography")
 
-TOC_START_MAGIC = 0x00434f54   # "TOC\0"
-TOC_SEARCH_MAX  = 0x1000       # search within first 4KB
+TOC_START_MAGIC = 0x00434f54
+TOC_SEARCH_MAX  = 0x1000
 SIGNATURE_SIZE  = 64
 
 
@@ -35,18 +32,41 @@ def find_toc_offset(firmware: bytes) -> int:
     return -1
 
 
+def load_firmware(path: str) -> tuple[bytes, dict | None]:
+    """Returns (raw binary, px4_pkg or None)."""
+    with open(path, "rb") as f:
+        header = f.read(4)
+    if header[:1] == b"{":
+        with open(path) as f:
+            pkg = json.load(f)
+        firmware = zlib.decompress(base64.b64decode(pkg["image"]))
+        return firmware, pkg
+    with open(path, "rb") as f:
+        return f.read(), None
+
+
+def save_output(path: str, signed: bytes, pkg: dict | None) -> None:
+    if pkg is not None:
+        pkg["image"]      = base64.b64encode(zlib.compress(signed, level=9)).decode()
+        pkg["image_size"] = len(signed)
+        with open(path, "w") as f:
+            json.dump(pkg, f)
+    else:
+        with open(path, "wb") as f:
+            f.write(signed)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--key",    required=True, help="operator_key.json")
-    ap.add_argument("--input",  required=True, help="unsigned firmware .bin")
-    ap.add_argument("--output", required=True, help="signed firmware .bin")
+    ap.add_argument("--input",  required=True, help="unsigned firmware (.px4 or .bin)")
+    ap.add_argument("--output", required=True, help="signed firmware (.px4 or .bin)")
     args = ap.parse_args()
 
     with open(args.key) as f:
         key_data = json.load(f)
 
-    with open(args.input, "rb") as f:
-        firmware = f.read()
+    firmware, pkg = load_firmware(args.input)
 
     toc_offset = find_toc_offset(firmware)
     if toc_offset < 0:
@@ -58,15 +78,14 @@ def main():
     print(f"TOC:    found at binary offset 0x{toc_offset:x}")
 
     priv = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(key_data["private"]))
-    signature = priv.sign(firmware)
+    signed = firmware + priv.sign(firmware)
 
-    with open(args.output, "wb") as f:
-        f.write(firmware)
-        f.write(signature)
+    save_output(args.output, signed, pkg)
 
+    fmt = ".px4" if pkg else ".bin"
     print(f"Input:  {args.input} ({len(firmware)} bytes)")
-    print(f"Output: {args.output} ({len(firmware) + SIGNATURE_SIZE} bytes)")
-    print(f"Sig:    {signature.hex()}")
+    print(f"Output: {args.output} ({len(signed)} bytes, {fmt})")
+    print(f"Sig:    {signed[-SIGNATURE_SIZE:].hex()}")
 
 
 if __name__ == "__main__":

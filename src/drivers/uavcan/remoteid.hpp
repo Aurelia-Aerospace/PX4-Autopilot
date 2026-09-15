@@ -33,6 +33,7 @@
 
 #pragma once
 
+#include <lib/systemlib/mavlink_log.h>
 #include <uORB/Subscription.hpp>
 #include <uORB/Publication.hpp>
 #include <uORB/topics/sensor_gps.h>
@@ -134,6 +135,7 @@ private:
 	uint8_t _rid_node_id{0}; // learned from first aurelia Status message
 
 	int _ota_fd{-1}; // open file descriptor during OTA_CHUNK transfer
+	orb_advert_t _mavlink_log_pub{nullptr};
 
 #ifdef PX4_CRYPTO
 	void handle_secure_command_local(const secure_command_request_s &req);

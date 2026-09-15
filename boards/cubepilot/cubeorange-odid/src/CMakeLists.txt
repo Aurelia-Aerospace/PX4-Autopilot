@@ -63,4 +63,13 @@ else()
 			nuttx_drivers
 			px4_layer
 	)
+
+	# Generate secure_bootloader.bin (generic ROMFS name) from the versioned binary
+	add_custom_command(OUTPUT ${PX4_BOARD_DIR}/extras/secure_bootloader.bin
+		COMMAND ${CMAKE_COMMAND} -E copy
+			${PX4_BOARD_DIR}/extras/${PX4_BOARD}_bootloader.bin
+			${PX4_BOARD_DIR}/extras/secure_bootloader.bin
+		DEPENDS ${PX4_BOARD_DIR}/extras/${PX4_BOARD}_bootloader.bin
+	)
+	add_custom_target(px4_secure_bootloader_alias ALL DEPENDS ${PX4_BOARD_DIR}/extras/secure_bootloader.bin)
 endif()

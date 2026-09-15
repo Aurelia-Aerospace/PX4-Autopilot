@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Write a signed RDCT recovery certificate to the FC via MAVLink SecureCommand (op 10).
 
-This allows booting unsigned firmware on the next reboot (single-use — firmware
-invalidates the cert on startup).
+Allows booting unsigned firmware until the bootloader is DFU-reflashed (cert is
+one-time-write — lives in the last 512 bytes of bootloader flash sector 0).
 
 Usage:
   python3 write_rdct.py --operator-key operator_key.json --recovery-key recovery_key.json
@@ -160,11 +160,13 @@ def main():
     reply = wait_reply(mav, SECURE_COMMAND_WRITE_RDCT)
     if not reply:
         sys.exit("Timed out waiting for WRITE_RDCT reply")
+    if reply.result == 5:
+        sys.exit("WRITE_RDCT: cert already written (result=5). To clear it, DFU-reflash the bootloader.")
     if reply.result != MAV_RESULT_ACCEPTED:
-        sys.exit(f"WRITE_RDCT failed: result={reply.result} (0=ok,2=denied,4=failed)")
+        sys.exit(f"WRITE_RDCT failed: result={reply.result} (0=ok,2=denied,4=failed,5=already_written)")
 
     print("OK — RDCT cert written. Reboot the board, then flash unsigned firmware.")
-    print("The cert is single-use: firmware invalidates it on next startup.")
+    print("Note: cert persists until bootloader is DFU-reflashed (clears sector 0).")
 
 
 if __name__ == "__main__":

@@ -49,6 +49,7 @@
 #include <nuttx/progmem.h>
 #include <sys/stat.h>
 #include <px4_platform_common/board_common.h>
+#include <px4_platform_common/log.h>
 extern "C" {
 keystore_session_handle_t keystore_open(void);
 void                      keystore_close(keystore_session_handle_t *handle);
@@ -57,24 +58,42 @@ size_t                    keystore_get_key(keystore_session_handle_t handle, uin
 static int bl_update_main(int argc, char *argv[])
 {
 	if (argc < 2) { return 1; }
+
+	const char *path = argv[1];
+
 	struct stat s;
-	if (stat(argv[1], &s) != 0 || s.st_size > 128 * 1024) { return 1; }
+	if (stat(path, &s) != 0) { return 1; }
+	if (s.st_size > 128 * 1024) { return 1; }
+
 	const size_t page_sz = up_progmem_pagesize(0);
 	const size_t img_sz  = ((size_t)s.st_size + page_sz - 1) & ~(page_sz - 1);
+
 	uint8_t *buf = (uint8_t *)malloc(img_sz);
 	if (!buf) { return 1; }
 	memset(buf, 0xff, img_sz);
-	int fd = open(argv[1], O_RDONLY);
+
+	int fd = open(path, O_RDONLY);
 	const bool ok = (fd >= 0) && (read(fd, buf, s.st_size) == (ssize_t)s.st_size);
 	if (fd >= 0) { close(fd); }
 	if (!ok) { free(buf); return 1; }
+
 	sched_lock();
-	up_progmem_eraseblock(0);
-	up_progmem_write(0x08000000, buf, img_sz);
+	ssize_t erase_ret = up_progmem_eraseblock(0);
+	ssize_t write_ret = up_progmem_write(0x08000000, buf, img_sz);
 	sched_unlock();
+
+	const uint8_t *flash = (const uint8_t *)0x08000000;
+	bool verified = (erase_ret >= 0) && (write_ret == (ssize_t)img_sz);
+	for (size_t i = 0; i < img_sz && verified; i++) {
+		if (flash[i] != buf[i]) { verified = false; }
+	}
 	free(buf);
-	board_reset(0);
-	return 0;
+
+	if (verified) {
+		px4_usleep(500000);
+		board_reset(0);
+	}
+	return verified ? 0 : 1;
 }
 }
 #endif
@@ -166,24 +185,13 @@ int UavcanRemoteIDController::init()
 	_uavcan_secure_command_client.setCallback(
 		SecureCommandClientBinder(this, &UavcanRemoteIDController::secure_command_client_cb));
 
-#if defined(PX4_CRYPTO) && defined(RDCT_CERT_ADDRESS)
-	/* Invalidate any RDCT cert left from a recovery boot — it's single-use.
-	 * Writing 0x00 over the signature field forces all bits to 0 (valid on STM32H7
-	 * without a sector erase since we only go 1→0). */
-	const uint8_t *rdct = (const uint8_t *)RDCT_CERT_ADDRESS;
-	if (rdct[0] != 0xFF) {
-		static const uint8_t zeros[64] = {};
-		size_t sig_offset = offsetof(image_cert_t, signature);
-		up_progmem_write(RDCT_CERT_ADDRESS + sig_offset, zeros, sizeof(zeros));
-	}
-#endif
-
 	return 0;
 }
 
 void UavcanRemoteIDController::periodic_update(const uavcan::TimerEvent &)
 {
 	_vehicle_status.update();
+
 
 	send_basic_id();
 	send_location();
@@ -197,23 +205,26 @@ void UavcanRemoteIDController::periodic_update(const uavcan::TimerEvent &)
 
 		// MAVLink op numbering (ArduPilot-aligned):
 		//   0,1 = session key (local)
-		//   8   = SET_PARAM        (local, PX4_CRYPTO only)
-		//   9   = GENERATE_RID_KEY → DroneCAN op 8
-		//   10  = WRITE_RDCT       (local, PX4_CRYPTO only)
-		//   11  = TRIGGER_BL_UPDATE(local, PX4_CRYPTO only)
-		//   12  = OTA_CHUNK        → DroneCAN op 9
+		//   8   = SET_PARAM          (local, PX4_CRYPTO only)
+		//   9   = GENERATE_RID_KEY   → DroneCAN op 8
+		//   10  = WRITE_RDCT         (local, PX4_CRYPTO only)
+		//   11  = OTA_BEGIN          (local, PX4_CRYPTO only)
+		//   12  = OTA_CHUNK          → DroneCAN op 9
+		//   13  = TRIGGER_BL_UPDATE  (local, PX4_CRYPTO only)
 		//   others → forward as-is
 		static constexpr uint32_t MAV_OP_SET_PARAM          = 8;
 		static constexpr uint32_t MAV_OP_GENERATE_RID_KEY   = 9;
 		static constexpr uint32_t MAV_OP_WRITE_RDCT         = 10;
-		static constexpr uint32_t MAV_OP_TRIGGER_BL_UPDATE  = 11;
+		static constexpr uint32_t MAV_OP_OTA_BEGIN          = 11;
 		static constexpr uint32_t MAV_OP_OTA_CHUNK          = 12;
+		static constexpr uint32_t MAV_OP_TRIGGER_BL_UPDATE  = 13;
 
 		const bool is_local_cmd =
 			req.operation == dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GET_SESSION_KEY ||
 			req.operation == dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GET_REMOTEID_SESSION_KEY ||
 			req.operation == MAV_OP_SET_PARAM ||
 			req.operation == MAV_OP_WRITE_RDCT ||
+			req.operation == MAV_OP_OTA_BEGIN ||
 			req.operation == MAV_OP_TRIGGER_BL_UPDATE;
 
 		if (is_local_cmd) {
@@ -601,7 +612,8 @@ void UavcanRemoteIDController::handle_secure_command_local(const secure_command_
 
 #ifdef RDCT_CERT_ADDRESS
 	static constexpr uint32_t MAV_OP_WRITE_RDCT        = 10;
-	static constexpr uint32_t MAV_OP_TRIGGER_BL_UPDATE = 11;
+	static constexpr uint32_t MAV_OP_OTA_BEGIN         = 11;
+	static constexpr uint32_t MAV_OP_TRIGGER_BL_UPDATE = 13;
 
 	if (req.operation == MAV_OP_WRITE_RDCT) {
 		// Data layout: [MAC: 16 bytes] [image_cert_t: N bytes]
@@ -630,15 +642,57 @@ void UavcanRemoteIDController::handle_secure_command_local(const secure_command_
 			return;
 		}
 
-		ssize_t written = up_progmem_write(RDCT_CERT_ADDRESS, cert_bytes, cert_len);
-		reply.result = (written == (ssize_t)cert_len) ? 0 : 4;
+		// ponytail: RDCT lives in bootloader sector — cannot erase without killing BL.
+		// Refuse if already written (would hardfault trying to flip 0→1 on STM32H7).
+		const uint8_t *existing = (const uint8_t *)RDCT_CERT_ADDRESS;
+		if (existing[0] != 0xFF) {
+			reply.result = 5; // already written, read-only until DFU reflash
+			_secure_command_reply_pub.publish(reply);
+			return;
+		}
+
+		// STM32H7 flash requires 32-byte word alignment; pad remainder with 0xFF
+		static constexpr size_t write_len = (144 + 31u) & ~31u; // 160 bytes
+		uint8_t write_buf[write_len];
+		memcpy(write_buf, cert_bytes, cert_len);
+		memset(write_buf + cert_len, 0xFF, write_len - cert_len);
+		ssize_t written = up_progmem_write(RDCT_CERT_ADDRESS, write_buf, write_len);
+		reply.result = (written == (ssize_t)write_len) ? 0 : 4;
+		_secure_command_reply_pub.publish(reply);
+		return;
+	}
+
+	if (req.operation == MAV_OP_OTA_BEGIN) {
+		// Data layout: [MAC: 16 bytes] [fw_size: uint32 LE]
+		// MAC = BLAKE2b-16(key=session_key, msg="ota_begin" || fw_size)
+		if (!_session_valid || req.data_length < 16 + 4) {
+			reply.result = 2; // MAV_RESULT_DENIED
+			_secure_command_reply_pub.publish(reply);
+			return;
+		}
+
+		static constexpr char label[] = "ota_begin";
+		const uint8_t *fw_size_bytes = req.data + 16;
+		uint8_t mac_input[sizeof(label) - 1 + 4];
+		memcpy(mac_input,                    label,        sizeof(label) - 1);
+		memcpy(mac_input + sizeof(label) - 1, fw_size_bytes, 4);
+
+		uint8_t expected_mac[16];
+		crypto_blake2b_general(expected_mac, 16, _session_key, 32,
+				       mac_input, sizeof(mac_input));
+
+		if (memcmp(expected_mac, req.data, 16) != 0) {
+			reply.result = 2; // MAV_RESULT_DENIED
+			_secure_command_reply_pub.publish(reply);
+			return;
+		}
+
+		reply.result = 0; // MAV_RESULT_ACCEPTED
 		_secure_command_reply_pub.publish(reply);
 		return;
 	}
 
 	if (req.operation == MAV_OP_TRIGGER_BL_UPDATE) {
-		// Data layout: [MAC: 16 bytes]
-		// MAC = BLAKE2b-16(key=session_key, msg="bl_update")
 		if (!_session_valid || req.data_length < 16) {
 			reply.result = 2; // MAV_RESULT_DENIED
 			_secure_command_reply_pub.publish(reply);
@@ -659,19 +713,15 @@ void UavcanRemoteIDController::handle_secure_command_local(const secure_command_
 		reply.result = 0; // MAV_RESULT_ACCEPTED
 		_secure_command_reply_pub.publish(reply);
 
-		// ROMFS-embedded bootloader (already in firmware, no SD needed).
-		// Fall back to SD for a custom/updated bootloader.
-		// ponytail: bl_update validates stack/entry ranges before flashing
 		static const char *const romfs_paths[] = {
-			"/etc/extras/cubepilot_cubeorange_bootloader.bin",
-			"/etc/extras/cubepilot_cubeorangeplus_bootloader.bin",
+			"/etc/extras/secure_bootloader.bin",
 			nullptr
 		};
 		const char *bl_path = "/fs/microsd/bootloader.bin";
 		for (auto p = romfs_paths; *p; ++p) {
 			if (access(*p, F_OK) == 0) { bl_path = *p; break; }
 		}
-		char *argv_bl[] = {(char *)"bl_update", (char *)bl_path, nullptr};
+		char *argv_bl[] = {(char *)bl_path, nullptr};
 		px4_task_spawn_cmd("bl_update", SCHED_DEFAULT, SCHED_PRIORITY_DEFAULT,
 				   2048, bl_update_main, argv_bl);
 		return;
@@ -832,9 +882,17 @@ void UavcanRemoteIDController::secure_command_client_cb(
 
 	const auto &rsp = result.getResponse();
 	reply.sequence    = rsp.sequence;
-	reply.operation   = rsp.operation;
 	reply.data_length = rsp.data.size();
 	memcpy(reply.data, rsp.data.begin(), reply.data_length);
+
+	// Translate DroneCAN op → MAVLink op where numbering differs
+	uint32_t mavlink_op = rsp.operation;
+	if (rsp.operation == dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GENERATE_RID_KEY) {
+		mavlink_op = 9;  // MAVLink GENERATE_RID_KEY
+	} else if (rsp.operation == dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_OTA_CHUNK) {
+		mavlink_op = 12; // MAVLink OTA_CHUNK
+	}
+	reply.operation = mavlink_op;
 
 	static constexpr uint8_t to_mav_result[4] = {
 		0, // RESULT_ACCEPTED  → MAV_RESULT_ACCEPTED
