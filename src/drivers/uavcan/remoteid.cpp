@@ -149,6 +149,7 @@ static int rid_seckey_write(const uint8_t *buf, size_t len)
 UavcanRemoteIDController::UavcanRemoteIDController(uavcan::INode &node) :
 	ModuleParams(nullptr),
 	_timer(node),
+	_ota_poll_timer(node),
 	_node(node),
 	_uavcan_pub_remoteid_basicid(node),
 	_uavcan_pub_remoteid_location(node),
@@ -166,6 +167,9 @@ int UavcanRemoteIDController::init()
 	// Setup timer and call back function for periodic updates
 	_timer.setCallback(TimerCbBinder(this, &UavcanRemoteIDController::periodic_update));
 	_timer.startPeriodic(uavcan::MonotonicDuration::fromMSec(1000 / MAX_RATE_HZ));
+
+	_ota_poll_timer.setCallback(OtaTimerCbBinder(this, &UavcanRemoteIDController::ota_poll));
+	_ota_poll_timer.startPeriodic(uavcan::MonotonicDuration::fromMSec(2)); // 500 Hz — matches ArduPilot 400 Hz cadence
 
 	int res = _uavcan_sub_arm_status.start(ArmStatusBinder(this, &UavcanRemoteIDController::arm_status_sub_cb));
 
@@ -239,24 +243,22 @@ void UavcanRemoteIDController::periodic_update(const uavcan::TimerEvent &)
 			_secure_command_reply_pub.publish(reply);
 #endif
 
+		} else if (req.operation == MAV_OP_OTA_CHUNK) {
+			// ota_poll handles OTA_CHUNK at 500 Hz — discard if 1 Hz timer wins the race
+
 		} else if (_rid_node_id != 0) {
-			// Translate MAVLink op → DroneCAN op where numbering differs
+			// Non-OTA DroneCAN commands (e.g. GENERATE_RID_KEY)
 			uint32_t dronecan_op = req.operation;
 			if (req.operation == MAV_OP_GENERATE_RID_KEY) {
-				dronecan_op = dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GENERATE_RID_KEY; // 8
-			} else if (req.operation == MAV_OP_OTA_CHUNK) {
-				dronecan_op = dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_OTA_CHUNK; // 9
+				dronecan_op = dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GENERATE_RID_KEY;
 			}
-
 			dronecan::remoteid::SecureCommand::Request dronecan_req{};
 			dronecan_req.sequence   = req.sequence;
 			dronecan_req.operation  = dronecan_op;
 			dronecan_req.sig_length = req.sig_length;
-
 			for (uint8_t i = 0; i < req.data_length && i < sizeof(req.data); ++i) {
 				dronecan_req.data.push_back(req.data[i]);
 			}
-
 			_uavcan_secure_command_client.call(uavcan::NodeID(_rid_node_id), dronecan_req);
 
 		} else {
@@ -687,6 +689,7 @@ void UavcanRemoteIDController::handle_secure_command_local(const secure_command_
 			return;
 		}
 
+		_ota_active = true;
 		reply.result = 0; // MAV_RESULT_ACCEPTED
 		_secure_command_reply_pub.publish(reply);
 		return;
@@ -871,6 +874,17 @@ UavcanRemoteIDController::secure_command_server_cb(
 void UavcanRemoteIDController::secure_command_client_cb(
 	const uavcan::ServiceCallResult<dronecan::remoteid::SecureCommand> &result)
 {
+#ifdef PX4_CRYPTO
+	if (_ota_active) {
+		// OTA path: hand all state transitions to ota_poll to avoid re-entrancy
+		_dronecan_pending       = false;
+		_ota_dronecan_success   = result.isSuccessful() && (result.getResponse().result == 0);
+		_ota_dronecan_done      = true;
+		return;
+	}
+#endif
+
+	// Non-OTA path: publish reply immediately
 	secure_command_reply_s reply{};
 	reply.timestamp = hrt_absolute_time();
 
@@ -885,22 +899,148 @@ void UavcanRemoteIDController::secure_command_client_cb(
 	reply.data_length = rsp.data.size();
 	memcpy(reply.data, rsp.data.begin(), reply.data_length);
 
-	// Translate DroneCAN op → MAVLink op where numbering differs
 	uint32_t mavlink_op = rsp.operation;
 	if (rsp.operation == dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GENERATE_RID_KEY) {
-		mavlink_op = 9;  // MAVLink GENERATE_RID_KEY
-	} else if (rsp.operation == dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_OTA_CHUNK) {
-		mavlink_op = 12; // MAVLink OTA_CHUNK
+		mavlink_op = 9;
 	}
 	reply.operation = mavlink_op;
 
-	static constexpr uint8_t to_mav_result[4] = {
-		0, // RESULT_ACCEPTED  → MAV_RESULT_ACCEPTED
-		2, // RESULT_DENIED    → MAV_RESULT_DENIED
-		4, // RESULT_FAILED    → MAV_RESULT_FAILED
-		3, // RESULT_UNSUPPORTED → MAV_RESULT_UNSUPPORTED
-	};
+	static constexpr uint8_t to_mav_result[4] = {0, 2, 4, 3};
 	reply.result = (rsp.result < 4) ? to_mav_result[rsp.result] : 4;
 
 	_secure_command_reply_pub.publish(reply);
+}
+
+void UavcanRemoteIDController::ota_poll(const uavcan::TimerEvent &)
+{
+#ifdef PX4_CRYPTO
+	if (!_ota_active) { return; }
+
+	static constexpr uint32_t MAV_OP_OTA_CHUNK = 12;
+
+	// Process DroneCAN result (set by callback; handled here to avoid re-entrancy)
+	if (_ota_dronecan_done) {
+		_ota_dronecan_done = false;
+
+		if (_dronecan_is_last_chunk) {
+			// Forward ESP32 validation result — success or failure — to script.
+			// Never retry last chunk: ESP32 is validating; re-sending interrupts it.
+			_uavcan_secure_command_client.setRequestTimeout(
+				uavcan::MonotonicDuration::fromMSec(1000)); // restore default
+			secure_command_reply_s reply{};
+			reply.timestamp = hrt_absolute_time();
+			reply.sequence  = _ota_inflight.sequence;
+			reply.operation = MAV_OP_OTA_CHUNK;
+			reply.result    = _ota_dronecan_success ? 0 : 4;
+			_secure_command_reply_pub.publish(reply);
+			_ota_active             = false;
+			_dronecan_is_last_chunk = false;
+			return;
+		}
+
+		if (!_ota_dronecan_success) {
+			// Non-last chunk DroneCAN timeout — retry same chunk
+			_dronecan_pending = true;
+			dronecan::remoteid::SecureCommand::Request dreq{};
+			dreq.sequence  = _ota_inflight.sequence;
+			dreq.operation = dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_OTA_CHUNK;
+			for (uint8_t i = 0; i < _ota_inflight.length; ++i) { dreq.data.push_back(_ota_inflight.data[i]); }
+			_uavcan_secure_command_client.call(uavcan::NodeID(_rid_node_id), dreq);
+			return;
+		}
+
+		// Non-last ACK: dispatch buffered chunk if queued
+		if (_ota_buf.valid) {
+			_dronecan_pending       = true;
+			_dronecan_is_last_chunk = _ota_buf.is_last;
+			_ota_inflight           = _ota_buf;
+			_ota_buf.valid          = false;
+			dronecan::remoteid::SecureCommand::Request dreq{};
+			dreq.sequence  = _ota_inflight.sequence;
+			dreq.operation = dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_OTA_CHUNK;
+			for (uint8_t i = 0; i < _ota_inflight.length; ++i) { dreq.data.push_back(_ota_inflight.data[i]); }
+			_uavcan_secure_command_client.call(uavcan::NodeID(_rid_node_id), dreq);
+			return;
+		}
+		// No buffer: fall through to read next chunk from uORB
+	}
+
+	// While last chunk is in-flight: drain script retries with TEMPORARILY_REJECTED
+	if (_dronecan_is_last_chunk) {
+		if (_secure_command_request_sub.updated()) {
+			secure_command_request_s req{};
+			_secure_command_request_sub.copy(&req);
+			if (req.operation == MAV_OP_OTA_CHUNK) {
+				secure_command_reply_s reply{};
+				reply.timestamp = hrt_absolute_time();
+				reply.sequence  = req.sequence;
+				reply.operation = MAV_OP_OTA_CHUNK;
+				reply.result    = 1; // TEMPORARILY_REJECTED — waiting for ESP32 validation
+				_secure_command_reply_pub.publish(reply);
+			}
+		}
+		return;
+	}
+
+	// Buffer full: reply TEMP_REJECTED so script retries in ~2ms instead of timing out for 5s
+	if (_dronecan_pending && _ota_buf.valid) {
+		if (_secure_command_request_sub.updated()) {
+			secure_command_request_s req{};
+			_secure_command_request_sub.copy(&req);
+			if (req.operation == MAV_OP_OTA_CHUNK) {
+				secure_command_reply_s reply{};
+				reply.timestamp = hrt_absolute_time();
+				reply.sequence  = req.sequence;
+				reply.operation = MAV_OP_OTA_CHUNK;
+				reply.result    = 1; // TEMPORARILY_REJECTED
+				_secure_command_reply_pub.publish(reply);
+			}
+		}
+		return;
+	}
+
+	if (_dronecan_pending) { return; }
+	if (_ota_buf.valid)    { return; }
+
+	if (!_secure_command_request_sub.updated()) { return; }
+
+	secure_command_request_s req{};
+	_secure_command_request_sub.copy(&req);
+
+	if (req.operation != MAV_OP_OTA_CHUNK || _rid_node_id == 0) { return; }
+
+	static constexpr uint8_t FLAG_LAST_BIT = 0x02;
+	const bool is_last = req.data_length > 0 && (req.data[0] & FLAG_LAST_BIT);
+
+	// Non-last: ACCEPTED immediately. Last: TEMPORARILY_REJECTED until ESP32 validates.
+	secure_command_reply_s fast_reply{};
+	fast_reply.timestamp = hrt_absolute_time();
+	fast_reply.sequence  = req.sequence;
+	fast_reply.operation = MAV_OP_OTA_CHUNK;
+	fast_reply.result    = is_last ? 1 : 0;
+	_secure_command_reply_pub.publish(fast_reply);
+
+	if (!_dronecan_pending) {
+		_dronecan_pending       = true;
+		_dronecan_is_last_chunk = is_last;
+		_ota_inflight.sequence  = req.sequence;
+		_ota_inflight.is_last   = is_last;
+		_ota_inflight.length    = req.data_length < sizeof(_ota_inflight.data) ? req.data_length : sizeof(_ota_inflight.data);
+		memcpy(_ota_inflight.data, req.data, _ota_inflight.length);
+		// Last chunk: ESP32 validates entire firmware — give it 60s before declaring failure
+		_uavcan_secure_command_client.setRequestTimeout(
+			uavcan::MonotonicDuration::fromMSec(is_last ? 60000 : 1000));
+		dronecan::remoteid::SecureCommand::Request dreq{};
+		dreq.sequence  = req.sequence;
+		dreq.operation = dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_OTA_CHUNK;
+		for (uint8_t i = 0; i < req.data_length; ++i) { dreq.data.push_back(req.data[i]); }
+		_uavcan_secure_command_client.call(uavcan::NodeID(_rid_node_id), dreq);
+	} else {
+		_ota_buf.valid    = true;
+		_ota_buf.is_last  = is_last;
+		_ota_buf.sequence = req.sequence;
+		_ota_buf.length   = req.data_length < sizeof(_ota_buf.data) ? req.data_length : sizeof(_ota_buf.data);
+		memcpy(_ota_buf.data, req.data, _ota_buf.length);
+	}
+#endif
 }

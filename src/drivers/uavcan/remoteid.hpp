@@ -72,10 +72,15 @@ private:
 	typedef uavcan::MethodBinder<UavcanRemoteIDController *, void (UavcanRemoteIDController::*)(const uavcan::TimerEvent &)>
 	TimerCbBinder;
 
+	typedef uavcan::MethodBinder<UavcanRemoteIDController *, void (UavcanRemoteIDController::*)(const uavcan::TimerEvent &)>
+	OtaTimerCbBinder;
+
 	static constexpr unsigned MAX_RATE_HZ = 1;
-	uavcan::TimerEventForwarder<TimerCbBinder> _timer;
+	uavcan::TimerEventForwarder<TimerCbBinder>    _timer;
+	uavcan::TimerEventForwarder<OtaTimerCbBinder> _ota_poll_timer;
 
 	void periodic_update(const uavcan::TimerEvent &);
+	void ota_poll(const uavcan::TimerEvent &);
 
 	void send_basic_id();
 	void send_location();
@@ -142,5 +147,15 @@ private:
 
 	uint8_t _session_key[32]{};
 	bool    _session_valid{false};
+	bool    _ota_active{false};
+
+	// OTA pipeline (ArduPilot-style): ota_poll owns all state transitions
+	struct OtaChunk { uint8_t data[220]; uint8_t length; uint32_t sequence; bool is_last; bool valid; };
+	OtaChunk _ota_inflight{};        // chunk currently in-flight over DroneCAN (kept for retry)
+	OtaChunk _ota_buf{};             // one-deep buffer: next chunk queued while in-flight
+	bool _dronecan_pending{false};
+	bool _dronecan_is_last_chunk{false};
+	bool _ota_dronecan_done{false};  // set by callback, cleared by ota_poll
+	bool _ota_dronecan_success{false};
 #endif
 };
