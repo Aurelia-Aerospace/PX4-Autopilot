@@ -140,6 +140,7 @@ def send_with_retry(mav, sequence, data_bytes, timeout, retry_delay, label, repl
         if reply.result == MAV_RESULT_ACCEPTED:
             return True
         if reply.result == 1:  # TEMPORARILY_REJECTED — FC waiting for DroneCAN ACK
+            attempts -= 1  # don't count waiting as a real attempt
             time.sleep(retry_delay)
             continue
         print(f"  {label}: {RESULTS.get(reply.result, f'unknown({reply.result})')}")
