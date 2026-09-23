@@ -48,7 +48,7 @@ SECURE_COMMAND_OTA_CHUNK       = 12
 MAV_RESULT_ACCEPTED            = 0
 TIMEOUT                        = 15.0
 
-CHUNK_SIZE = 200  # max firmware bytes per DroneCAN transfer
+CHUNK_SIZE = 200  # max firmware bytes per DroneCAN transfer (FLAG_FIRST: 220-9=211 max; others: 220-5=215 max)
 
 FLAG_FIRST = 0x01
 FLAG_LAST  = 0x02
@@ -206,7 +206,10 @@ def main():
         if i == n_chunks - 1: flags |= FLAG_LAST
         offset = i * CHUNK_SIZE
 
-        chunk_data = bytearray([flags]) + struct.pack("<I", offset) + bytearray(chunk)
+        if flags & FLAG_FIRST:
+            chunk_data = bytearray([flags]) + struct.pack("<I", offset) + struct.pack("<I", fw_size) + bytearray(chunk)
+        else:
+            chunk_data = bytearray([flags]) + struct.pack("<I", offset) + bytearray(chunk)
         label = f"chunk {i + 1}/{n_chunks} offset={offset}"
 
         chunk_timeout  = args.first_chunk_timeout if i == 0 else args.timeout
