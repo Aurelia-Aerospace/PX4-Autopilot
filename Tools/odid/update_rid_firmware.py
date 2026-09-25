@@ -48,7 +48,7 @@ SECURE_COMMAND_OTA_CHUNK       = 12
 MAV_RESULT_ACCEPTED            = 0
 TIMEOUT                        = 15.0
 
-CHUNK_SIZE = 200  # max firmware bytes per DroneCAN transfer (FLAG_FIRST: 220-9=211 max; others: 220-5=215 max)
+CHUNK_SIZE = 200  # max firmware bytes per DroneCAN transfer (header is 5 bytes: flags+offset; 220-5=215 max)
 
 FLAG_FIRST = 0x01
 FLAG_LAST  = 0x02
@@ -96,8 +96,8 @@ parser.add_argument("--device",       default="udpin:0.0.0.0:14551")
 parser.add_argument("--baud",         type=int, default=115200)
 parser.add_argument("--timeout",      type=float, default=TIMEOUT,
                     help="Timeout per command in seconds (default: 15)")
-parser.add_argument("--first-chunk-timeout", type=float, default=60.0,
-                    help="Timeout for first chunk — allows ESP32 OTA pre-erase (default: 60)")
+parser.add_argument("--begin-timeout", type=float, default=60.0,
+                    help="Timeout for OTA_BEGIN in seconds — waits for ESP32 partition erase (default: 60)")
 parser.add_argument("--retry-delay",  type=float, default=0.0,
                     help="Delay between retries on TEMPORARILY_REJECTED (default: 0.0s)")
 parser.add_argument("--chunk-reply-timeout", type=float, default=5.0,
@@ -166,7 +166,7 @@ def main():
     print(f"Chunks: {n_chunks} x {CHUNK_SIZE} bytes")
 
     print(f"Connecting to {args.device} ...")
-    mav = mavutil.mavlink_connection(args.device, baud=args.baud)
+    mav = mavutil.mavlink_connection(args.device, baud=args.baud, dialect='ardupilotmega')
     mav.wait_heartbeat(timeout=10)
     print(f"Heartbeat: system {mav.target_system} component {mav.target_component}")
 
@@ -184,19 +184,27 @@ def main():
     session_key = blake2b_derive(shared)
     print(f"Session key: {session_key.hex()}")
 
-    # Step 2: OTA_BEGIN — MAC over "ota_begin" || fw_size
+    # Step 2: OTA_BEGIN — retry on TEMPORARILY_REJECTED while ESP32 erases partition
     fw_size_bytes = struct.pack("<I", fw_size)
     mac  = blake2b_mac(session_key, b"ota_begin" + fw_size_bytes)
     data = mac + fw_size_bytes  # 16 + 4 = 20 bytes
 
-    print("Sending OTA_BEGIN...")
-    send_secure_command(mav, SECURE_COMMAND_OTA_BEGIN, data=data, sequence=2)
-    reply = wait_reply(mav, SECURE_COMMAND_OTA_BEGIN)
-    if not reply:
-        sys.exit("Timed out waiting for OTA_BEGIN reply")
-    if reply.result != MAV_RESULT_ACCEPTED:
+    print("Sending OTA_BEGIN (waiting for partition erase)...")
+    deadline = time.time() + args.begin_timeout
+    while True:
+        send_secure_command(mav, SECURE_COMMAND_OTA_BEGIN, data=data, sequence=2)
+        reply = wait_reply(mav, SECURE_COMMAND_OTA_BEGIN)
+        if not reply:
+            sys.exit("Timed out waiting for OTA_BEGIN reply")
+        if reply.result == MAV_RESULT_ACCEPTED:
+            break
+        if reply.result == 1:  # TEMPORARILY_REJECTED — still erasing
+            if time.time() >= deadline:
+                sys.exit("OTA_BEGIN timed out waiting for erase")
+            time.sleep(0.5)
+            continue
         sys.exit(f"OTA_BEGIN rejected: result={reply.result} (0=ok,2=denied,4=failed)")
-    print("OTA session started")
+    print("OTA partition ready")
 
     # Step 3: firmware chunks
     start_time = time.time()
@@ -206,13 +214,10 @@ def main():
         if i == n_chunks - 1: flags |= FLAG_LAST
         offset = i * CHUNK_SIZE
 
-        if flags & FLAG_FIRST:
-            chunk_data = bytearray([flags]) + struct.pack("<I", offset) + struct.pack("<I", fw_size) + bytearray(chunk)
-        else:
-            chunk_data = bytearray([flags]) + struct.pack("<I", offset) + bytearray(chunk)
+        chunk_data = bytearray([flags]) + struct.pack("<I", offset) + bytearray(chunk)
         label = f"chunk {i + 1}/{n_chunks} offset={offset}"
 
-        chunk_timeout  = args.first_chunk_timeout if i == 0 else args.timeout
+        chunk_timeout  = args.timeout
         reply_timeout  = args.timeout if (flags & FLAG_LAST) else args.chunk_reply_timeout
         ok = send_with_retry(mav, i + 3, chunk_data, chunk_timeout,
                              args.retry_delay, label, reply_timeout)
