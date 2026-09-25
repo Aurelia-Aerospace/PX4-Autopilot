@@ -667,6 +667,23 @@ void UavcanRemoteIDController::handle_secure_command_local(const secure_command_
 	if (req.operation == MAV_OP_OTA_BEGIN) {
 		// Data layout: [MAC: 16 bytes] [fw_size: uint32 LE]
 		// MAC = BLAKE2b-16(key=session_key, msg="ota_begin" || fw_size)
+
+		// If erase already done, script can proceed
+		if (_ota_active) {
+			reply.operation = req.operation;
+			reply.result = 0; // MAV_RESULT_ACCEPTED
+			_secure_command_reply_pub.publish(reply);
+			return;
+		}
+
+		// While ESP32 is erasing, drain retries
+		if (_ota_begin_pending) {
+			reply.operation = req.operation;
+			reply.result = 1; // TEMPORARILY_REJECTED
+			_secure_command_reply_pub.publish(reply);
+			return;
+		}
+
 		if (!_session_valid || req.data_length < 16 + 4) {
 			reply.result = 2; // MAV_RESULT_DENIED
 			_secure_command_reply_pub.publish(reply);
@@ -689,8 +706,27 @@ void UavcanRemoteIDController::handle_secure_command_local(const secure_command_
 			return;
 		}
 
-		_ota_active = true;
-		reply.result = 0; // MAV_RESULT_ACCEPTED
+		if (_rid_node_id == 0) {
+			reply.result = 4; // MAV_RESULT_FAILED — no RID node yet
+			_secure_command_reply_pub.publish(reply);
+			return;
+		}
+
+		uint32_t fw_size = 0;
+		memcpy(&fw_size, fw_size_bytes, sizeof(fw_size));
+		dronecan::remoteid::SecureCommand::Request dreq{};
+		dreq.sequence  = req.sequence;
+		dreq.operation = dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_OTA_BEGIN;
+		for (uint8_t i = 0; i < 4; ++i) { dreq.data.push_back(fw_size_bytes[i]); }
+		// OTA_BEGIN may block up to ~10s while ESP32 erases partition
+		_uavcan_secure_command_client.setRequestTimeout(
+			uavcan::MonotonicDuration::fromMSec(15000));
+		_uavcan_secure_command_client.call(uavcan::NodeID(_rid_node_id), dreq);
+
+		_ota_begin_pending = true;
+		_ota_begin_seq     = req.sequence;
+		_ota_begin_epoch   = _session_epoch;
+		reply.result       = 1; // MAV_RESULT_TEMPORARILY_REJECTED
 		_secure_command_reply_pub.publish(reply);
 		return;
 	}
@@ -753,6 +789,7 @@ void UavcanRemoteIDController::handle_secure_command_local(const secure_command_
 		crypto_x25519(shared, eph_priv, operator_x25519);
 		crypto_blake2b_general(_session_key, 32, nullptr, 0, shared, 32);
 		_session_valid = true;
+		_session_epoch++;
 
 		crypto_wipe(shared,   sizeof(shared));
 		crypto_wipe(eph_priv, sizeof(eph_priv));
@@ -875,6 +912,29 @@ void UavcanRemoteIDController::secure_command_client_cb(
 	const uavcan::ServiceCallResult<dronecan::remoteid::SecureCommand> &result)
 {
 #ifdef PX4_CRYPTO
+	if (_ota_begin_pending) {
+		// Restore default request timeout
+		_uavcan_secure_command_client.setRequestTimeout(
+			uavcan::MonotonicDuration::fromMSec(1000));
+		_ota_begin_pending = false;
+		// Drop stale callback from a previous session (new GET_SESSION_KEY incremented epoch)
+		if (_ota_begin_epoch != _session_epoch) {
+			return;
+		}
+		secure_command_reply_s reply{};
+		reply.timestamp = hrt_absolute_time();
+		reply.sequence  = _ota_begin_seq;
+		reply.operation = 11; // MAV_OP_OTA_BEGIN
+		if (result.isSuccessful() && result.getResponse().result == 0) {
+			_ota_active  = true;
+			reply.result = 0; // ACCEPTED
+		} else {
+			reply.result = 4; // FAILED
+		}
+		_secure_command_reply_pub.publish(reply);
+		return;
+	}
+
 	if (_ota_active) {
 		// OTA path: hand all state transitions to ota_poll to avoid re-entrancy
 		_dronecan_pending       = false;

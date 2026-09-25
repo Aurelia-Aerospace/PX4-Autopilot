@@ -148,6 +148,10 @@ private:
 	uint8_t _session_key[32]{};
 	bool    _session_valid{false};
 	bool    _ota_active{false};
+	bool    _ota_begin_pending{false};  // waiting for ESP32 OTA_BEGIN (erase) response
+	uint32_t _ota_begin_seq{0};         // sequence of the pending OTA_BEGIN request
+	uint32_t _session_epoch{0};         // incremented on each GET_SESSION_KEY
+	uint32_t _ota_begin_epoch{0};       // epoch at OTA_BEGIN dispatch; stale if != _session_epoch
 
 	// OTA pipeline (ArduPilot-style): ota_poll owns all state transitions
 	struct OtaChunk { uint8_t data[220]; uint8_t length; uint32_t sequence; bool is_last; bool valid; };
