@@ -101,6 +101,13 @@ private:
 		Land = 2,
 	};
 
+	enum class odid_flying_not_allowed_action : int32_t {
+		Disabled = 0,
+		Warning = 1,
+		RTL = 2,
+		Land = 3,
+	};
+
 	enum class geofence_violation_action : int32_t {
 		None = 0,
 		Warning = 1,
@@ -174,6 +181,7 @@ private:
 	static ActionOptions fromHighWindLimitActParam(int param_value);
 	static ActionOptions fromPosLowActParam(int param_value);
 	static ActionOptions fromRemainingFlightTimeLowActParam(int param_value);
+	static ActionOptions fromOdidFlyingNotAllowedActParam(int param_value);
 
 	const int _caller_id_mode_fallback{genCallerId()};
 	bool _last_state_mode_fallback{false};
@@ -213,7 +221,8 @@ private:
 					(ParamInt<px4::params::COM_QC_ACT>) _param_com_qc_act,
 					(ParamInt<px4::params::COM_WIND_MAX_ACT>) _param_com_wind_max_act,
 					(ParamInt<px4::params::COM_FLTT_LOW_ACT>) _param_com_fltt_low_act,
-					(ParamInt<px4::params::COM_POS_LOW_ACT>) _param_com_pos_low_act
+					(ParamInt<px4::params::COM_POS_LOW_ACT>) _param_com_pos_low_act,
+					(ParamInt<px4::params::COM_ODID_FS_ACT>) _param_com_odid_fs_act
 				       );
 
 };

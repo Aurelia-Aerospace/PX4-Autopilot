@@ -154,6 +154,34 @@ FailsafeBase::ActionOptions Failsafe::fromImbalancedPropActParam(int param_value
 	return options;
 }
 
+FailsafeBase::ActionOptions Failsafe::fromOdidFlyingNotAllowedActParam(int param_value)
+{
+	ActionOptions options{};
+
+	switch (odid_flying_not_allowed_action(param_value)) {
+	case odid_flying_not_allowed_action::Disabled:
+	default:
+		options.action = Action::None;
+		break;
+
+	case odid_flying_not_allowed_action::Warning:
+		options.action = Action::Warn;
+		break;
+
+	case odid_flying_not_allowed_action::RTL:
+		options.action = Action::RTL;
+		options.clear_condition = ClearCondition::OnModeChangeOrDisarm;
+		break;
+
+	case odid_flying_not_allowed_action::Land:
+		options.action = Action::Land;
+		options.clear_condition = ClearCondition::OnModeChangeOrDisarm;
+		break;
+	}
+
+	return options;
+}
+
 FailsafeBase::ActionOptions Failsafe::fromActuatorFailureActParam(int param_value)
 {
 	ActionOptions options{};
@@ -631,6 +659,7 @@ void Failsafe::checkStateAndMode(const hrt_abstime &time_us, const State &state,
 
 	CHECK_FAILSAFE(status_flags, fd_imbalanced_prop, fromImbalancedPropActParam(_param_com_imb_prop_act.get()));
 	CHECK_FAILSAFE(status_flags, fd_motor_failure, fromActuatorFailureActParam(_param_com_actuator_failure_act.get()));
+	CHECK_FAILSAFE(status_flags, odid_flying_not_allowed, fromOdidFlyingNotAllowedActParam(_param_com_odid_fs_act.get()));
 
 
 
