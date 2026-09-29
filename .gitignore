@@ -50,6 +50,7 @@ GTAGS
 # CLion ignores
 .idea
 cmake-build-*/
+keys/
 
 posix-configs/SITL/init/test/*_generated
 
@@ -109,3 +110,4 @@ src/systemcmds/topic_listener/listener_generated.cpp
 # colcon
 log/
 keys/
+Tools/odid/tests/results/
