@@ -41,10 +41,12 @@
  */
 
 #include <stdio.h>
+#include <string.h>
 
 #include "mavlink_parameters.h"
 #include "mavlink_main.h"
 #include <lib/systemlib/mavlink_log.h>
+#include <lib/parameters/param_security.hpp>
 
 MavlinkParametersManager::MavlinkParametersManager(Mavlink &mavlink) :
 	_mavlink(mavlink)
@@ -129,6 +131,14 @@ MavlinkParametersManager::handle_message(const mavlink_message_t *msg)
 				} else if (!((param_type(param) == PARAM_TYPE_INT32 && set.param_type == MAV_PARAM_TYPE_INT32) ||
 					     (param_type(param) == PARAM_TYPE_FLOAT && set.param_type == MAV_PARAM_TYPE_REAL32))) {
 					PX4_ERR("param types mismatch param: %s", name);
+
+				} else if (fw_param_is_secure(name)) {
+					// @SECURE param — must use SecureCommand op 8
+					send_param(param);
+
+				} else if (fw_param_is_locked(name)) {
+					// @LOCKED param — blocked while FW_LOCK == 1
+					send_param(param);
 
 				} else {
 					// According to the mavlink spec we should always acknowledge a write operation.

@@ -103,6 +103,7 @@
 #include "streams/OPEN_DRONE_ID_LOCATION.hpp"
 #include "streams/OPEN_DRONE_ID_SYSTEM.hpp"
 #include "streams/OPEN_DRONE_ID_ARM_STATUS.hpp"
+#include "streams/SECURE_COMMAND_REPLY.hpp"
 #include "streams/OPTICAL_FLOW_RAD.hpp"
 #include "streams/ORBIT_EXECUTION_STATUS.hpp"
 #include "streams/PING.hpp"
@@ -504,6 +505,9 @@ static const StreamListItem streams_list[] = {
 #if defined(GPS_RTCM_DATA_HPP)
 	create_stream_list_item<MavlinkStreamGPSRTCMData>(),
 #endif // GPS_RTCM_DATA_HPP
+#if defined(MAVLINK_MSG_ID_SECURE_COMMAND_REPLY)
+	create_stream_list_item<MavlinkStreamSecureCommandReply>(),
+#endif // MAVLINK_MSG_ID_SECURE_COMMAND_REPLY
 #if defined(UAVIONIX_ADSB_OUT_CFG_HPP)
 	create_stream_list_item<MavlinkStreamUavionixADSBOutCfg>(),
 #endif // UAVIONIX_ADSB_OUT_CFG_HPP
