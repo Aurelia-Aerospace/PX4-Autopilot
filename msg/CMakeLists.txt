@@ -189,6 +189,8 @@ set(msg_files
 	RtlStatus.msg
 	RtlTimeEstimate.msg
 	SatelliteInfo.msg
+	SecureCommandReply.msg
+	SecureCommandRequest.msg
 	SensorAccel.msg
 	SensorAccelFifo.msg
 	SensorBaro.msg
