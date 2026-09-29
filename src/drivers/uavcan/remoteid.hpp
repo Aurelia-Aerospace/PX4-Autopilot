@@ -33,6 +33,7 @@
 
 #pragma once
 
+#include <lib/systemlib/mavlink_log.h>
 #include <uORB/Subscription.hpp>
 #include <uORB/Publication.hpp>
 #include <uORB/topics/sensor_gps.h>
@@ -45,6 +46,8 @@
 #include <uORB/topics/open_drone_id_arm_status.h>
 #include <uORB/topics/open_drone_id_self_id.h>
 #include <uORB/topics/open_drone_id_system.h>
+#include <uORB/topics/secure_command_request.h>
+#include <uORB/topics/secure_command_reply.h>
 
 #include <uavcan/uavcan.hpp>
 #include <dronecan/remoteid/BasicID.hpp>
@@ -53,6 +56,7 @@
 #include <dronecan/remoteid/System.hpp>
 #include <dronecan/remoteid/ArmStatus.hpp>
 #include <dronecan/remoteid/OperatorID.hpp>
+#include <dronecan/remoteid/SecureCommand.hpp>
 
 #include <px4_platform_common/module_params.h>
 
@@ -68,10 +72,15 @@ private:
 	typedef uavcan::MethodBinder<UavcanRemoteIDController *, void (UavcanRemoteIDController::*)(const uavcan::TimerEvent &)>
 	TimerCbBinder;
 
+	typedef uavcan::MethodBinder<UavcanRemoteIDController *, void (UavcanRemoteIDController::*)(const uavcan::TimerEvent &)>
+	OtaTimerCbBinder;
+
 	static constexpr unsigned MAX_RATE_HZ = 1;
-	uavcan::TimerEventForwarder<TimerCbBinder> _timer;
+	uavcan::TimerEventForwarder<TimerCbBinder>    _timer;
+	uavcan::TimerEventForwarder<OtaTimerCbBinder> _ota_poll_timer;
 
 	void periodic_update(const uavcan::TimerEvent &);
+	void ota_poll(const uavcan::TimerEvent &);
 
 	void send_basic_id();
 	void send_location();
@@ -80,6 +89,13 @@ private:
 	void send_operator_id();
 
 	void arm_status_sub_cb(const uavcan::ReceivedDataStructure<dronecan::remoteid::ArmStatus> &msg);
+
+	void secure_command_server_cb(
+		const uavcan::ReceivedDataStructure<dronecan::remoteid::SecureCommand::Request> &req,
+		dronecan::remoteid::SecureCommand::Response &rsp);
+
+	void secure_command_client_cb(
+		const uavcan::ServiceCallResult<dronecan::remoteid::SecureCommand> &result);
 
 	uavcan::INode &_node;
 
@@ -104,4 +120,46 @@ private:
 	      void (UavcanRemoteIDController::*)(const uavcan::ReceivedDataStructure<dronecan::remoteid::ArmStatus> &) >;
 
 	uavcan::Subscriber<dronecan::remoteid::ArmStatus, ArmStatusBinder> _uavcan_sub_arm_status;
+
+	using SecureCommandBinder = uavcan::MethodBinder<UavcanRemoteIDController *,
+	      void (UavcanRemoteIDController::*)(
+		      const uavcan::ReceivedDataStructure<dronecan::remoteid::SecureCommand::Request> &,
+		      dronecan::remoteid::SecureCommand::Response &)>;
+
+	uavcan::ServiceServer<dronecan::remoteid::SecureCommand, SecureCommandBinder> _uavcan_secure_command_server;
+
+	using SecureCommandClientBinder = uavcan::MethodBinder<UavcanRemoteIDController *,
+	      void (UavcanRemoteIDController::*)(
+		      const uavcan::ServiceCallResult<dronecan::remoteid::SecureCommand> &)>;
+
+	uavcan::ServiceClient<dronecan::remoteid::SecureCommand, SecureCommandClientBinder> _uavcan_secure_command_client;
+
+	uORB::Publication<secure_command_reply_s>  _secure_command_reply_pub{ORB_ID(secure_command_reply)};
+	uORB::Subscription                         _secure_command_request_sub{ORB_ID(secure_command_request)};
+
+	uint8_t _rid_node_id{0}; // learned from first aurelia Status message
+
+	int _ota_fd{-1}; // open file descriptor during OTA_CHUNK transfer
+	orb_advert_t _mavlink_log_pub{nullptr};
+
+#ifdef PX4_CRYPTO
+	void handle_secure_command_local(const secure_command_request_s &req);
+
+	uint8_t _session_key[32]{};
+	bool    _session_valid{false};
+	bool    _ota_active{false};
+	bool    _ota_begin_pending{false};  // waiting for ESP32 OTA_BEGIN (erase) response
+	uint32_t _ota_begin_seq{0};         // sequence of the pending OTA_BEGIN request
+	uint32_t _session_epoch{0};         // incremented on each GET_SESSION_KEY
+	uint32_t _ota_begin_epoch{0};       // epoch at OTA_BEGIN dispatch; stale if != _session_epoch
+
+	// OTA pipeline (ArduPilot-style): ota_poll owns all state transitions
+	struct OtaChunk { uint8_t data[220]; uint8_t length; uint32_t sequence; bool is_last; bool valid; };
+	OtaChunk _ota_inflight{};        // chunk currently in-flight over DroneCAN (kept for retry)
+	OtaChunk _ota_buf{};             // one-deep buffer: next chunk queued while in-flight
+	bool _dronecan_pending{false};
+	bool _dronecan_is_last_chunk{false};
+	bool _ota_dronecan_done{false};  // set by callback, cleared by ota_poll
+	bool _ota_dronecan_success{false};
+#endif
 };
