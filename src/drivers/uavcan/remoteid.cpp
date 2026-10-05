@@ -208,13 +208,14 @@ void UavcanRemoteIDController::periodic_update(const uavcan::TimerEvent &)
 		_secure_command_request_sub.copy(&req);
 
 		// MAVLink op numbering (ArduPilot-aligned):
-		//   0,1 = session key (local)
-		//   8   = SET_PARAM          (local, PX4_CRYPTO only)
-		//   9   = GENERATE_RID_KEY   → DroneCAN op 8
-		//   10  = WRITE_RDCT         (local, PX4_CRYPTO only)
-		//   11  = OTA_BEGIN          (local, PX4_CRYPTO only)
-		//   12  = OTA_CHUNK          → DroneCAN op 9
-		//   13  = TRIGGER_BL_UPDATE  (local, PX4_CRYPTO only)
+		//   0  = GET_SESSION_KEY          (local)
+		//   1  = GET_REMOTEID_SESSION_KEY → relay to RID module DroneCAN op 1
+		//   8  = SET_PARAM               (local, PX4_CRYPTO only)
+		//   9  = GENERATE_RID_KEY        → DroneCAN op 8
+		//   10 = WRITE_RDCT              (local, PX4_CRYPTO only)
+		//   11 = OTA_BEGIN               (local, PX4_CRYPTO only)
+		//   12 = OTA_CHUNK               → DroneCAN op 9
+		//   13 = TRIGGER_BL_UPDATE       (local, PX4_CRYPTO only)
 		//   others → forward as-is
 		static constexpr uint32_t MAV_OP_SET_PARAM          = 8;
 		static constexpr uint32_t MAV_OP_GENERATE_RID_KEY   = 9;
@@ -225,7 +226,6 @@ void UavcanRemoteIDController::periodic_update(const uavcan::TimerEvent &)
 
 		const bool is_local_cmd =
 			req.operation == dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GET_SESSION_KEY ||
-			req.operation == dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GET_REMOTEID_SESSION_KEY ||
 			req.operation == MAV_OP_SET_PARAM ||
 			req.operation == MAV_OP_WRITE_RDCT ||
 			req.operation == MAV_OP_OTA_BEGIN ||
@@ -243,11 +243,54 @@ void UavcanRemoteIDController::periodic_update(const uavcan::TimerEvent &)
 			_secure_command_reply_pub.publish(reply);
 #endif
 
+		} else if (req.operation == dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GET_REMOTEID_SESSION_KEY) {
+			// Relay to RID module — GCS needs RID's DroneCAN session key to sign op 6
+			secure_command_reply_s sk_reply{};
+			sk_reply.timestamp = hrt_absolute_time();
+			sk_reply.sequence  = req.sequence;
+			sk_reply.operation = req.operation;
+			if (_rid_node_id == 0) {
+				PX4_INFO("RID sk: no module detected (rid_node_id=0)");
+				sk_reply.result = 4; // MAV_RESULT_FAILED — no module
+				_secure_command_reply_pub.publish(sk_reply);
+			} else if (_rid_sk_pending) {
+				sk_reply.result = 1; // MAV_RESULT_TEMPORARILY_REJECTED
+				_secure_command_reply_pub.publish(sk_reply);
+			} else {
+				_rid_sk_pending     = true;
+				_rid_sk_pending_seq = req.sequence;
+				dronecan::remoteid::SecureCommand::Request dronecan_req{};
+				dronecan_req.sequence   = req.sequence;
+				dronecan_req.operation  = dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GET_REMOTEID_SESSION_KEY;
+				dronecan_req.sig_length = req.sig_length;
+				// DroneCAN data field = data_bytes + sig_bytes concatenated
+				const uint16_t total_op1 = (uint16_t)req.data_length + req.sig_length;
+				for (uint16_t i = 0; i < total_op1 && i < sizeof(req.data); ++i) {
+					dronecan_req.data.push_back(req.data[i]);
+				}
+				PX4_INFO("RID sk: relaying op1 to node %u seq=%lu data=%u sig=%u",
+					 _rid_node_id, (unsigned long)req.sequence, req.data_length, req.sig_length);
+				_uavcan_secure_command_client.call(uavcan::NodeID(_rid_node_id), dronecan_req);
+				sk_reply.result = 1; // MAV_RESULT_TEMPORARILY_REJECTED — await DroneCAN response
+				_secure_command_reply_pub.publish(sk_reply);
+			}
+
 		} else if (req.operation == MAV_OP_OTA_CHUNK) {
 			// ota_poll handles OTA_CHUNK at 500 Hz — discard if 1 Hz timer wins the race
 
 		} else if (_rid_node_id != 0) {
-			// Non-OTA DroneCAN commands (e.g. GENERATE_RID_KEY)
+			// Non-OTA DroneCAN commands (e.g. GENERATE_RID_KEY, SET_REMOTEID_CONFIG)
+			// SET_REMOTEID_CONFIG (op 6): verified by RID module key, not PX4 — reject oversized payloads
+			static constexpr uint32_t DRONECAN_MAX_PAYLOAD = 220;
+			if ((uint32_t)req.data_length + req.sig_length > DRONECAN_MAX_PAYLOAD) {
+				secure_command_reply_s reply{};
+				reply.timestamp = hrt_absolute_time();
+				reply.sequence  = req.sequence;
+				reply.operation = req.operation;
+				reply.result    = 2; // MAV_RESULT_DENIED — payload exceeds 220 bytes
+				_secure_command_reply_pub.publish(reply);
+
+			} else {
 			uint32_t dronecan_op = req.operation;
 			if (req.operation == MAV_OP_GENERATE_RID_KEY) {
 				dronecan_op = dronecan::remoteid::SecureCommand::Request::SECURE_COMMAND_GENERATE_RID_KEY;
@@ -256,10 +299,13 @@ void UavcanRemoteIDController::periodic_update(const uavcan::TimerEvent &)
 			dronecan_req.sequence   = req.sequence;
 			dronecan_req.operation  = dronecan_op;
 			dronecan_req.sig_length = req.sig_length;
-			for (uint8_t i = 0; i < req.data_length && i < sizeof(req.data); ++i) {
+			// DroneCAN data field = data_bytes + sig_bytes concatenated
+			const uint16_t total = (uint16_t)req.data_length + req.sig_length;
+			for (uint16_t i = 0; i < total && i < sizeof(req.data); ++i) {
 				dronecan_req.data.push_back(req.data[i]);
 			}
 			_uavcan_secure_command_client.call(uavcan::NodeID(_rid_node_id), dronecan_req);
+			}
 
 		} else {
 			secure_command_reply_s reply{};
@@ -767,7 +813,7 @@ void UavcanRemoteIDController::handle_secure_command_local(const secure_command_
 	}
 #endif // RDCT_CERT_ADDRESS
 
-	// Session key operations (op 0 and 1 — GET_SESSION_KEY / GET_REMOTEID_SESSION_KEY)
+	// Session key operation (op 0 — GET_SESSION_KEY; op 1 is relayed to RID module above)
 	keystore_session_handle_t ks = keystore_open();
 	uint8_t ed25519_pub[32]{};
 	size_t  got = keystore_get_key(ks, 0, ed25519_pub, sizeof(ed25519_pub));
@@ -911,6 +957,28 @@ UavcanRemoteIDController::secure_command_server_cb(
 void UavcanRemoteIDController::secure_command_client_cb(
 	const uavcan::ServiceCallResult<dronecan::remoteid::SecureCommand> &result)
 {
+	if (_rid_sk_pending) {
+		_rid_sk_pending = false;
+		secure_command_reply_s reply{};
+		reply.timestamp = hrt_absolute_time();
+		reply.sequence  = _rid_sk_pending_seq;
+		reply.operation = 1; // MAV SECURE_COMMAND_GET_REMOTEID_SESSION_KEY
+		if (!result.isSuccessful()) {
+			PX4_INFO("RID sk: DroneCAN timeout — module unreachable or no response");
+			reply.result = 4; // MAV_RESULT_FAILED
+		} else {
+			const auto &rsp = result.getResponse();
+			// DroneCAN result codes: 0=ACCEPTED 1=TEMP_REJECTED 2=DENIED 3=UNSUPPORTED 4=FAILED
+			PX4_INFO("RID sk: DroneCAN result=%u data_len=%u", rsp.result, (unsigned)rsp.data.size());
+			static constexpr uint8_t to_mav_result[4] = {0, 2, 4, 3};
+			reply.result      = (rsp.result < 4) ? to_mav_result[rsp.result] : 4;
+			reply.data_length = rsp.data.size();
+			memcpy(reply.data, rsp.data.begin(), reply.data_length);
+		}
+		_secure_command_reply_pub.publish(reply);
+		return;
+	}
+
 #ifdef PX4_CRYPTO
 	if (_ota_begin_pending) {
 		// Restore default request timeout

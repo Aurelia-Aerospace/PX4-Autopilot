@@ -137,7 +137,9 @@ private:
 	uORB::Publication<secure_command_reply_s>  _secure_command_reply_pub{ORB_ID(secure_command_reply)};
 	uORB::Subscription                         _secure_command_request_sub{ORB_ID(secure_command_request)};
 
-	uint8_t _rid_node_id{0}; // learned from first aurelia Status message
+	uint8_t  _rid_node_id{0};      // learned from first aurelia Status message
+	bool     _rid_sk_pending{false};
+	uint32_t _rid_sk_pending_seq{0};
 
 	int _ota_fd{-1}; // open file descriptor during OTA_CHUNK transfer
 	orb_advert_t _mavlink_log_pub{nullptr};
