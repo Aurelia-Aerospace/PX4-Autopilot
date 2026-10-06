@@ -244,6 +244,34 @@ void CrsfRc::Run()
 					uint16_t altitude = static_cast<int16_t>(sensor_gps.altitude_msl_m * 1e3) + 1000;
 					uint8_t num_satellites = sensor_gps.satellites_used;
 					this->SendTelemetryGps(latitude, longitude, groundspeed, gps_heading, altitude, num_satellites);
+
+					// 0x5002: GPS STATUS passthrough (yaapu-compatible)
+					// fix_type: 0=no hw, 1=no fix, 2=2D, 3=3D, 4=DGPS, 5=RTK float, 6=RTK fixed
+					uint8_t basic_fix, advanced_fix;
+
+					if (sensor_gps.fix_type <= 1) {
+						basic_fix = sensor_gps.fix_type; advanced_fix = 0;
+
+					} else if (sensor_gps.fix_type == 2) {
+						basic_fix = 2; advanced_fix = 0;
+
+					} else if (sensor_gps.fix_type == 3) {
+						basic_fix = 3; advanced_fix = 0;
+
+					} else if (sensor_gps.fix_type == 4) {
+						basic_fix = 3; advanced_fix = 1;
+
+					} else if (sensor_gps.fix_type == 5) {
+						basic_fix = 3; advanced_fix = 2;
+
+					} else {
+						basic_fix = 3; advanced_fix = 3;
+					}
+
+					uint32_t val_5002 = (uint32_t)(num_satellites & 0xF)
+							    | ((uint32_t)(basic_fix & 0x3) << 4)
+							    | ((uint32_t)(advanced_fix & 0x3) << 14);
+					this->SendTelemetryPassthrough(0x5002, val_5002);
 				}
 
 				break;
@@ -322,6 +350,42 @@ void CrsfRc::Run()
 					}
 
 					this->SendTelemetryFlightMode(flight_mode);
+
+					// 0x5007: PARAMS — frameType (paramId=1), triggers flight mode table load in yaapu
+					// vehicle_type: 1=rotary, 2=fixed_wing, 3=rover → yaapu frameTypes: 0=copter, 1=plane, 10=rover
+					uint8_t frame_type_val;
+
+					switch (vehicle_status.vehicle_type) {
+					case vehicle_status_s::VEHICLE_TYPE_FIXED_WING: frame_type_val = 1;  break;
+					case vehicle_status_s::VEHICLE_TYPE_ROVER:      frame_type_val = 10; break;
+					default:                                         frame_type_val = 0;  break; // copter
+					}
+
+					this->SendTelemetryPassthrough(0x5007, (1u << 24) | frame_type_val);
+
+					// 0x5001: AP STATUS — armed bit + flight mode index for copter_px4.lua / plane_px4.lua
+					uint8_t armed = (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED) ? 1 : 0;
+					uint8_t fm_index;
+
+					switch (vehicle_status.nav_state) {
+					case vehicle_status_s::NAVIGATION_STATE_MANUAL:          fm_index = 0;  break;
+					case vehicle_status_s::NAVIGATION_STATE_ALTCTL:          fm_index = 1;  break;
+					case vehicle_status_s::NAVIGATION_STATE_POSCTL:          fm_index = 2;  break;
+					case vehicle_status_s::NAVIGATION_STATE_ACRO:            fm_index = 3;  break;
+					case vehicle_status_s::NAVIGATION_STATE_OFFBOARD:        fm_index = 4;  break;
+					case vehicle_status_s::NAVIGATION_STATE_STAB:            fm_index = 5;  break;
+					case vehicle_status_s::NAVIGATION_STATE_AUTO_TAKEOFF:    fm_index = 13; break;
+					case vehicle_status_s::NAVIGATION_STATE_AUTO_LOITER:     fm_index = 14; break;
+					case vehicle_status_s::NAVIGATION_STATE_AUTO_MISSION:    fm_index = 15; break;
+					case vehicle_status_s::NAVIGATION_STATE_AUTO_RTL:        fm_index = 16; break;
+					case vehicle_status_s::NAVIGATION_STATE_AUTO_LAND:
+					case vehicle_status_s::NAVIGATION_STATE_DESCEND:         fm_index = 17; break;
+					case vehicle_status_s::NAVIGATION_STATE_AUTO_FOLLOW_TARGET: fm_index = 19; break;
+					case vehicle_status_s::NAVIGATION_STATE_AUTO_PRECLAND:   fm_index = 20; break;
+					default:                                                  fm_index = 31; break;
+					}
+
+					this->SendTelemetryPassthrough(0x5001, ((uint32_t)armed << 8) | (fm_index & 0x1F));
 				}
 
 				break;
@@ -477,6 +541,24 @@ bool CrsfRc::SendTelemetryFlightMode(const char *flight_mode)
 	offset += length;
 	buf[offset - 1] = 0; // ensure null-terminated string
 	WriteFrameCrc(buf, offset, length + 4);
+	return _uart->write((void *) buf, (size_t) offset);
+}
+
+bool CrsfRc::SendTelemetryPassthrough(uint16_t app_id, uint32_t value)
+{
+	// payload: [0xF0][app_id_lo][app_id_hi][v0][v1][v2][v3] = 7 bytes
+	// frame:   [sync][len][0x80][payload...][CRC] = 11 bytes total
+	uint8_t buf[11];
+	int offset = 0;
+	WriteFrameHeader(buf, offset, crsf_frame_type_t::ap_custom_telem, 7);
+	write_uint8_t(buf, offset, 0xF0);
+	write_uint8_t(buf, offset, app_id & 0xFF);
+	write_uint8_t(buf, offset, (app_id >> 8) & 0xFF);
+	write_uint8_t(buf, offset, value & 0xFF);
+	write_uint8_t(buf, offset, (value >> 8) & 0xFF);
+	write_uint8_t(buf, offset, (value >> 16) & 0xFF);
+	write_uint8_t(buf, offset, (value >> 24) & 0xFF);
+	WriteFrameCrc(buf, offset, sizeof(buf));
 	return _uart->write((void *) buf, (size_t) offset);
 }
 

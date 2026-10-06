@@ -90,6 +90,8 @@ private:
 
 	bool SendTelemetryFlightMode(const char *flight_mode);
 
+	bool SendTelemetryPassthrough(uint16_t app_id, uint32_t value);
+
 	Serial *_uart = nullptr; ///< UART interface to RC
 
 	char _device[20] {}; ///< device / serial port path
@@ -126,7 +128,10 @@ private:
 		parameter_settings_entry = 0x2B,
 		parameter_read = 0x2C,
 		parameter_write = 0x2D,
-		command = 0x32
+		command = 0x32,
+
+		// ArduPilot-compatible passthrough telemetry over CRSF
+		ap_custom_telem = 0x80
 	};
 
 	enum class crsf_payload_size_t : uint8_t {
