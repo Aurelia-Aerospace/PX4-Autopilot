@@ -50,9 +50,15 @@
 // telemetry
 #include <uORB/Subscription.hpp>
 #include <uORB/topics/battery_status.h>
+#include <uORB/topics/home_position.h>
+#include <uORB/topics/mavlink_log.h>
+#include <uORB/topics/manual_control_setpoint.h>
+#include <uORB/topics/mission_result.h>
+#include <uORB/topics/position_setpoint_triplet.h>
 #include <uORB/topics/vehicle_attitude.h>
 #include <uORB/topics/sensor_gps.h>
 #include <uORB/topics/vehicle_status.h>
+#include <uORB/topics/wind.h>
 
 using namespace device;
 
@@ -91,6 +97,7 @@ private:
 	bool SendTelemetryFlightMode(const char *flight_mode);
 
 	bool SendTelemetryPassthrough(uint16_t app_id, uint32_t value);
+	bool SendTelemetryMessage(uint8_t severity, const char *text);
 
 	Serial *_uart = nullptr; ///< UART interface to RC
 
@@ -107,12 +114,18 @@ private:
 
 	// telemetry
 	hrt_abstime _telemetry_update_last{0};
-	static constexpr int num_data_types{4}; ///< number of different telemetry data types
+	static constexpr int num_data_types{7}; ///< number of different telemetry data types
 	int _next_type{0};
 	uORB::Subscription _battery_status_sub{ORB_ID(battery_status)};
+	uORB::Subscription _home_position_sub{ORB_ID(home_position)};
+	uORB::Subscription _mavlink_log_sub{ORB_ID(mavlink_log)};
+	uORB::Subscription _manual_control_setpoint_sub{ORB_ID(manual_control_setpoint)};
+	uORB::Subscription _mission_result_sub{ORB_ID(mission_result)};
+	uORB::Subscription _position_setpoint_triplet_sub{ORB_ID(position_setpoint_triplet)};
 	uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
 	uORB::Subscription _vehicle_gps_position_sub{ORB_ID(vehicle_gps_position)};
 	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};
+	uORB::Subscription _wind_sub{ORB_ID(wind)};
 
 	enum class crsf_frame_type_t : uint8_t {
 		gps = 0x02,
