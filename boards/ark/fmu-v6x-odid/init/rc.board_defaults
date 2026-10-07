@@ -1,0 +1,53 @@
+#!/bin/sh
+#
+# board specific defaults
+#------------------------------------------------------------------------------
+
+param set-default EKF2_MULTI_IMU 0
+
+# Mavlink ethernet (CFG 1000)
+param set-default MAV_2_CONFIG 1000
+param set-default MAV_2_BROADCAST 1
+param set-default MAV_2_MODE 0
+param set-default MAV_2_RADIO_CTL 0
+param set-default MAV_2_RATE 100000
+param set-default MAV_2_REMOTE_PRT 14550
+param set-default MAV_2_UDP_PRT 14550
+
+param set-default SENS_EN_INA238 0
+param set-default SENS_EN_INA228 0
+param set-default SENS_EN_INA226 1
+
+param set-default SENS_EN_THERMAL 1
+param set-default SENS_IMU_MODE 1
+param set-default SENS_IMU_TEMP 10.0
+#param set-default SENS_IMU_TEMP_FF 0.0
+#param set-default SENS_IMU_TEMP_I 0.025
+#param set-default SENS_IMU_TEMP_P 1.0
+
+param set-default UAVCAN_ESC_IFACE 2
+
+if ver hwtypecmp ARKV6X000
+then
+	param set-default SENS_TEMP_ID 2818058
+fi
+
+if ver hwtypecmp ARKV6X001
+then
+	param set-default SENS_TEMP_ID 3014666
+fi
+
+safety_button start
+
+# ODID: enforce RemoteID system presence before arming
+param set-default COM_ARM_ODID 2
+
+# ODID: RTL when ODID module reports flying not allowed (falls back to Land without GPS)
+param set-default COM_ODID_FS_ACT 2
+
+# ODID: enable DroneCAN with ESC/servo control
+param set-default UAVCAN_ENABLE 2
+
+# ODID: firmware lock and serial number (written at manufacturing via SecureCommand)
+param set-default -s FW_LOCK 1
+param set-default -s FW_SN 0
