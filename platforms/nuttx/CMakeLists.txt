@@ -75,6 +75,12 @@ if("${PX4_BOARD_LABEL}" STREQUAL "bootloader")
 		bootloader_lib
 		drivers_board
 	)
+	if(DEFINED PX4_CRYPTO)
+		# Force extraction of random_stub.c.obj from libbootloader.a before crypto_backend
+		# is processed — without this, the linker sees px4_get_secure_random as undefined
+		# only after libbootloader.a has already been scanned (archive ordering issue).
+		target_link_libraries(px4 PRIVATE "-Wl,--undefined=px4_get_secure_random")
+	endif()
 elseif("${PX4_BOARD_LABEL}" STREQUAL "canbootloader")
 	set(SCRIPT_PREFIX ${PX4_BOARD_LABEL}_)
 	add_subdirectory(src/canbootloader)
