@@ -137,6 +137,9 @@ private:
 	uORB::Publication<secure_command_reply_s>  _secure_command_reply_pub{ORB_ID(secure_command_reply)};
 	uORB::Subscription                         _secure_command_request_sub{ORB_ID(secure_command_request)};
 
+	dronecan::remoteid::System _takeoff_system_msg{};
+	bool _takeoff_location_set{false};
+
 	uint8_t  _rid_node_id{0};      // learned from first aurelia Status message
 	bool     _rid_sk_pending{false};
 	uint32_t _rid_sk_pending_seq{0};

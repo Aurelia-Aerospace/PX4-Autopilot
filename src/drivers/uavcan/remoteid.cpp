@@ -320,20 +320,9 @@ void UavcanRemoteIDController::periodic_update(const uavcan::TimerEvent &)
 
 void UavcanRemoteIDController::send_basic_id()
 {
-	dronecan::remoteid::BasicID basic_id {};
-	// basic_id.id_or_mac // supposedly only used for drone ID data from other UAs
-	basic_id.id_type = dronecan::remoteid::BasicID::ODID_ID_TYPE_SERIAL_NUMBER;
-	basic_id.ua_type = static_cast<uint8_t>(open_drone_id_translations::odidTypeForMavType(
-			_vehicle_status.get().system_type));
-
-	// uas_id: UAS (Unmanned Aircraft System) ID following the format specified by id_type
-	// TODO: MAV_ODID_ID_TYPE_SERIAL_NUMBER needs to be ANSI/CTA-2063 format
-
-	char uas_id[20] = {};
-	board_get_px4_guid_formated((char *)(uas_id), sizeof(uas_id));
-	basic_id.uas_id = uas_id;
-
-	_uavcan_pub_remoteid_basicid.broadcast(basic_id);
+	// RID module stores UAS_ID in its own NVS parameters; broadcasting
+	// the board GUID here creates a spurious BasicID[1] on the module side.
+	// PX4 has no uORB topic for a GCS BASIC_ID, so nothing to forward.
 }
 
 void UavcanRemoteIDController::send_location()
@@ -477,10 +466,13 @@ void UavcanRemoteIDController::send_location()
 void UavcanRemoteIDController::send_system()
 {
 	open_drone_id_system_s system;
+	const bool gcs_valid = _open_drone_id_system.advertised()
+			       && _open_drone_id_system.copy(&system)
+			       && (system.operator_latitude != 0 || system.operator_longitude != 0);
 
-	if (_open_drone_id_system.advertised() && _open_drone_id_system.copy(&system)) {
-
-		// Use what ground station sends us.
+	if (gcs_valid) {
+		// GCS provided a valid operator location — use it directly.
+		_takeoff_location_set = false;
 
 		dronecan::remoteid::System msg {};
 		msg.timestamp = system.timestamp;
@@ -504,22 +496,24 @@ void UavcanRemoteIDController::send_system()
 		_uavcan_pub_remoteid_system.broadcast(msg);
 
 	} else {
-		// And otherwise, send our home/takeoff location.
+		// No valid GCS operator location — use drone GPS as operator location.
+		// Pre-arm: keep updating so the last fix becomes the takeoff location on arm.
+		// Armed: freeze the pre-arm location (§ 89.315 broadcast module requirement).
 
 		sensor_gps_s vehicle_gps_position;
-		home_position_s home_position;
 
-		if (_vehicle_gps_position_sub.copy(&vehicle_gps_position) && _home_position_sub.copy(&home_position)) {
-			if (vehicle_gps_position.fix_type >= 3
-			    && home_position.valid_alt && home_position.valid_hpos) {
+		const bool armed = (_vehicle_status.get().arming_state == vehicle_status_s::ARMING_STATE_ARMED);
+
+		if (!armed) {
+			if (_vehicle_gps_position_sub.copy(&vehicle_gps_position)
+			    && vehicle_gps_position.fix_type >= 3) {
 
 				dronecan::remoteid::System msg {};
 
-				// msg.id_or_mac // Only used for drone ID data received from other UAs.
 				msg.operator_location_type = MAV_ODID_OPERATOR_LOCATION_TYPE_TAKEOFF;
 				msg.classification_type = MAV_ODID_CLASSIFICATION_TYPE_UNDECLARED;
-				msg.operator_latitude = home_position.lat * 1e7;
-				msg.operator_longitude = home_position.lon * 1e7;
+				msg.operator_latitude = static_cast<int32_t>(round(vehicle_gps_position.latitude_deg * 1e7));
+				msg.operator_longitude = static_cast<int32_t>(round(vehicle_gps_position.longitude_deg * 1e7));
 				msg.area_count = 1;
 				msg.area_radius = 0;
 				msg.area_ceiling = -1000;
@@ -527,14 +521,19 @@ void UavcanRemoteIDController::send_system()
 				msg.category_eu = MAV_ODID_CATEGORY_EU_UNDECLARED;
 				msg.class_eu = MAV_ODID_CLASS_EU_UNDECLARED;
 				float wgs84_amsl_offset = vehicle_gps_position.altitude_ellipsoid_m - vehicle_gps_position.altitude_msl_m;
-				msg.operator_altitude_geo = home_position.alt + wgs84_amsl_offset;
+				msg.operator_altitude_geo = static_cast<float>(vehicle_gps_position.altitude_msl_m) + wgs84_amsl_offset;
 
-				// timestamp: 32 bit Unix Timestamp in seconds since 00:00:00 01/01/2019.
-				static uint64_t utc_offset_s = 1'546'300'800; // UTC seconds since 00:00:00 01/01/2019
+				static uint64_t utc_offset_s = 1'546'300'800;
 				msg.timestamp = vehicle_gps_position.time_utc_usec / 1e6 - utc_offset_s;
+
+				_takeoff_system_msg = msg;
+				_takeoff_location_set = true;
 
 				_uavcan_pub_remoteid_system.broadcast(msg);
 			}
+
+		} else if (_takeoff_location_set) {
+			_uavcan_pub_remoteid_system.broadcast(_takeoff_system_msg);
 		}
 	}
 }
@@ -542,11 +541,9 @@ void UavcanRemoteIDController::send_system()
 void UavcanRemoteIDController::send_self_id()
 {
 	open_drone_id_self_id_s self_id;
+	dronecan::remoteid::SelfID msg {};
 
 	if (_open_drone_id_self_id.copy(&self_id)) {
-
-		dronecan::remoteid::SelfID msg {};
-
 		for (unsigned i = 0; i < sizeof(self_id.id_or_mac); ++i) {
 			msg.id_or_mac.push_back(self_id.id_or_mac[i]);
 		}
@@ -557,8 +554,17 @@ void UavcanRemoteIDController::send_self_id()
 			msg.description.push_back(self_id.description[i]);
 		}
 
-		_uavcan_pub_remoteid_self_id.broadcast(msg);
+	} else {
+		// GCS has not provided a SELF_ID — broadcast a generic default.
+		msg.description_type = MAV_ODID_DESC_TYPE_TEXT;
+		static const char default_desc[] = "General Flight Purpose";
+
+		for (unsigned i = 0; i < sizeof(default_desc); ++i) {
+			msg.description.push_back(default_desc[i]);
+		}
 	}
+
+	_uavcan_pub_remoteid_self_id.broadcast(msg);
 }
 
 void UavcanRemoteIDController::send_operator_id()
